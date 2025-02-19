@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
+from butterfly import BF
 
 
 class BaseAutoencoder(nn.Module):
@@ -154,7 +155,7 @@ class TopKSAE(BaseAutoencoder):
         l1_loss = self.cfg["l1_coeff"] * l1_norm
         l0_norm = (acts_topk > 0).float().sum(-1).mean()
         aux_loss = self.get_auxiliary_loss(x, x_reconstruct, acts)
-        loss = l2_loss + l1_loss + aux_loss
+        loss = l2_loss + l1_loss + aux_loss # TODO: why the l1_loss?
         num_dead_features = (
             self.num_batches_not_active > self.cfg["n_batches_to_dead"]
         ).sum()
@@ -172,6 +173,12 @@ class TopKSAE(BaseAutoencoder):
         }
         return output
 
+    """
+    Takes the top_k_aux activations across the dead features.
+    Calculate the reconstruction using this top_k_aux features = e^
+    We assume this models the reconstrcution error thus the aux_loss is aux_coeff * MSE(e - e^)
+    Where e = x - x^
+    """
     def get_auxiliary_loss(self, x, x_reconstruct, acts):
         dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
         if dead_features.sum() > 0:
@@ -230,10 +237,57 @@ class VanillaSAE(BaseAutoencoder):
         }
         return output
 
+class ButterflySAE(BaseAutoencoder):
+    def __init__(self, cfg):
+        super.__init__(cfg)
+        self.W_enc = BF(self.cfg["act_size"], self.cfg["dict_size"])
+        self.W_dec = BF(self.cfg["dict_size"], self.cfg["act_size"])
+    
+    def forward(self, x):
+        x, x_mean, x_std = self.preprocess_input(x)
+        x_cent = x - self.b_dec
+        acts = F.relu(W_enc(x_cent) + self.b_enc)
+        acts_topk = torch.topk(acts, self.cfg["top_k"], dim=-1)
+        acts_topk = torch.zeros_like(acts).scatter(
+            -1, acts_topk.indices, acts_topk.values
+        )  
 
-import torch
-import torch.nn as nn
-import torch.autograd as autograd
+        x_reconstruct = w_dec(acts_topk) + self.b_dec
+        
+        self.update_inactive_features(acts_topk)
+        
+        output = self.get_loss_dict(x, x_reconstruct, acts_topk, x_mean, x_std)
+        return output
+    
+    def get_loss_dict(self, x, x_reconstruct, acts, x_mean, x_std):
+        l2_loss = (x_reconstruct.float() - x.float).pow(2).mean()
+        l1_norm = acts.float().abs().sum(-1).mean()
+        l1_loss = self.cfg["l1_coeff"] * l1_norm
+        l0_norm = (acts > 0).float().sum(-1).mean()
+        loss = l2_loss + l1_loss
+        num_dead_features = (
+            self.num_batches_not_active > self.cfg["n_batches_to_dead"]
+        ).sum()
+        
+        sae_out = self.postprocess_output(x_reconstruct, x_mean, x_std)
+
+        output = {
+            "sae_out": sae_out,
+            "feature_acts": acts,
+            "num_dead_features": num_dead_features,
+            "loss": loss,
+            "l1_loss": l1_loss,
+            "l2_loss": l2_loss,
+            "l0_norm": l0_norm,
+            "l1_norm": l1_norm,
+        }
+        return output
+    
+    @torch.no_grad()
+    def make_decoder_weights_and_grad_unit_norm(self):
+        # Not applicable with butterfly modules
+        pass
+
 
 class RectangleFunction(autograd.Function):
     @staticmethod

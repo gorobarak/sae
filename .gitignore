@@ -4,3 +4,4 @@ wandb/
 checkpoints/
 exploration/
 run_exps/
+playground.py

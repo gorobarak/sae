@@ -4,9 +4,9 @@ import torch
 def get_default_cfg():
     default_cfg = {
         "seed": 49,
-        "batch_size": 4096,
+        "batch_size": 1024,
         "lr": 3e-4,
-        "num_tokens": int(1e9),
+        "num_tokens": int(1e6), #total number of token trained on
         "l1_coeff": 0,
         "beta1": 0.9,
         "beta2": 0.99,
@@ -18,21 +18,21 @@ def get_default_cfg():
         "layer": 8,
         "act_size": 768,
         "dict_size": 12288,
-        "device": "cuda:0",
+        "device": "cuda",
         "model_batch_size": 512,
         "num_batches_in_buffer": 10,
         "dataset_path": "Skylion007/openwebtext",
         "wandb_project": "sparse_autoencoders",
         "input_unit_norm": True,
-        "perf_log_freq": 1000,
+        "perf_log_freq": 100,
         "sae_type": "topk",
-        "checkpoint_freq": 10000,
+        "checkpoint_freq": 1000,
         "n_batches_to_dead": 5,
 
         # (Batch)TopKSAE specific
         "top_k": 32,
-        "top_k_aux": 512,
-        "aux_penalty": (1/32),
+        "top_k_aux": 512, 
+        "aux_penalty": (1/32), #auxilery lost coeffcient
         # for jumprelu
         "bandwidth": 0.001,
     }
