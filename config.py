@@ -6,7 +6,7 @@ def get_default_cfg():
         "seed": 49,
         "batch_size": 1024,
         "lr": 3e-4,
-        "num_tokens": int(1e6), #total number of token trained on
+        "num_tokens": int(1e7), #total number of token trained on
         "l1_coeff": 0,
         "beta1": 0.9,
         "beta2": 0.99,

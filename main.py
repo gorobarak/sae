@@ -4,7 +4,7 @@ from activation_store import ActivationsStore
 from config import get_default_cfg, post_init_cfg
 from transformer_lens import HookedTransformer
 
-for sae_type in ["topk, butterfly"]:
+for sae_type in ["butterfly", "topk"]:
     cfg = get_default_cfg()
     cfg["model_name"] = "gpt2-small"
     cfg["layer"] = 8
@@ -23,10 +23,11 @@ for sae_type in ["topk, butterfly"]:
     cfg["sae_type"] = sae_type
     # sae = None 
     
-    if sae_type == 'butterfly':
+    if cfg["sae_type"] == 'butterfly':
         sae = ButterflySAE(cfg)
-    elif sae_type == 'topk':
+    elif cfg["sae_type"] == 'topk':
         sae = TopKSAE(cfg)
+
 
     cfg = post_init_cfg(cfg)
             

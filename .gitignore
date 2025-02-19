@@ -5,3 +5,4 @@ checkpoints/
 exploration/
 run_exps/
 playground.py
+slurm.slurm

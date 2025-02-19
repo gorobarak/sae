@@ -239,20 +239,24 @@ class VanillaSAE(BaseAutoencoder):
 
 class ButterflySAE(BaseAutoencoder):
     def __init__(self, cfg):
-        super.__init__(cfg)
-        self.W_enc = BF(self.cfg["act_size"], self.cfg["dict_size"])
-        self.W_dec = BF(self.cfg["dict_size"], self.cfg["act_size"])
+        super().__init__(cfg)
+        self.W_enc = None
+        self.W_dec = None
+        self.BF_W_enc = BF(self.cfg["act_size"], self.cfg["dict_size"])
+        self.BF_W_dec = BF(self.cfg["dict_size"], self.cfg["act_size"])
+
+        self.to(cfg["dtype"]).to(cfg["device"])
     
     def forward(self, x):
         x, x_mean, x_std = self.preprocess_input(x)
         x_cent = x - self.b_dec
-        acts = F.relu(W_enc(x_cent) + self.b_enc)
+        acts = F.relu(self.BF_W_enc(x_cent) + self.b_enc)
         acts_topk = torch.topk(acts, self.cfg["top_k"], dim=-1)
         acts_topk = torch.zeros_like(acts).scatter(
             -1, acts_topk.indices, acts_topk.values
         )  
 
-        x_reconstruct = w_dec(acts_topk) + self.b_dec
+        x_reconstruct = self.BF_W_dec(acts_topk) + self.b_dec
         
         self.update_inactive_features(acts_topk)
         
@@ -260,7 +264,7 @@ class ButterflySAE(BaseAutoencoder):
         return output
     
     def get_loss_dict(self, x, x_reconstruct, acts, x_mean, x_std):
-        l2_loss = (x_reconstruct.float() - x.float).pow(2).mean()
+        l2_loss = (x_reconstruct.float() - x.float()).pow(2).mean()
         l1_norm = acts.float().abs().sum(-1).mean()
         l1_loss = self.cfg["l1_coeff"] * l1_norm
         l0_norm = (acts > 0).float().sum(-1).mean()

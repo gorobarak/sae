@@ -7,10 +7,10 @@
 #SBATCH --time=1000 # max time (minutes)
 #SBATCH --signal=USR1@120 # how to end job when time’s up
 #SBATCH --nodes=1 # number of machines
-#SBATCH --ntasks=1 # number of processes
+#SBATCH --ntasks=4 # number of processes
 #SBATCH --mem=500000 # CPU memory (MB)
 #SBATCH --cpus-per-task=4 # CPU cores per process
-#SBATCH --gpus=1 # GPUs in total
+#SBATCH --gpus=4 # GPUs in total
 
 
 python main.py
