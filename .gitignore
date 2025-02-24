@@ -4,5 +4,6 @@ wandb/
 checkpoints/
 exploration/
 run_exps/
+plots/
 playground.py
 slurm.slurm

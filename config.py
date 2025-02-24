@@ -31,10 +31,12 @@ def get_default_cfg():
 
         # (Batch)TopKSAE specific
         "top_k": 32,
-        "top_k_aux": 512, 
+        "top_k_aux": 512, #num of top k dead latens to use for aux loss
         "aux_penalty": (1/32), #auxilery lost coeffcient
         # for jumprelu
         "bandwidth": 0.001,
+        # ButterflySAE
+        "use_topk": True
     }
     default_cfg = post_init_cfg(default_cfg)
     return default_cfg
