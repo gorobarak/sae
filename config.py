@@ -6,7 +6,7 @@ def get_default_cfg():
         "seed": 49,
         "batch_size": 1024,
         "lr": 3e-4,
-        "num_tokens": int(1e7), #total number of token trained on
+        "num_tokens": int(1e6), #total number of token trained on
         "l1_coeff": 0,
         "beta1": 0.9,
         "beta2": 0.99,
@@ -34,9 +34,7 @@ def get_default_cfg():
         "top_k_aux": 512, #num of top k dead latens to use for aux loss
         "aux_penalty": (1/32), #auxilery lost coeffcient
         # for jumprelu
-        "bandwidth": 0.001,
-        # ButterflySAE
-        "use_topk": True
+        "bandwidth": 0.001
     }
     default_cfg = post_init_cfg(default_cfg)
     return default_cfg

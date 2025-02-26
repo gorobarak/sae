@@ -1,11 +1,10 @@
 # %%
-from tkinter.filedialog import SaveAs
 import wandb
 import pandas as pd
 
 api = wandb.Api()
 
-projects = ['butterfly_compersion_v3', 'butterfly_compersion_v4']
+projects = ['testing_top_k_butterfly']
 
 entity = "gorodissky-tel-aviv-university"
 data = []
@@ -39,7 +38,7 @@ import numpy as np
 fig, axs = plt.subplots(2, 2, figsize=(12, 8))
 
 # Plot 1: Normalized MSE vs Dictionary size (k=32)
-for sae_type in ['topk', 'butterfly', 'TopK - butterfly']:
+for sae_type in ['topk', 'butterfly_topk']:
     data = df[(df['config_sae_type'] == sae_type) & (df['k'] == 32.)]
     data = data.sort_values(by='dictionary_size')
     axs[0, 0].plot(data['dictionary_size'], data['normalized_mse'], 
@@ -53,7 +52,7 @@ axs[0, 0].legend()
 axs[0, 0].grid(True)
 
 # Plot 2: Normalized MSE vs k (Dict size = 12288)
-for sae_type in ['topk', 'TopK - butterfly']:
+for sae_type in ['topk', 'butterfly_topk', 'butterfly']:
     data = df[(df['config_sae_type'] == sae_type) & (df['dictionary_size'] == 12288)]
     data = data.sort_values(by='k')
     axs[0, 1].plot(data['l0_norm'], data['normalized_mse'], 
@@ -66,7 +65,7 @@ axs[0, 1].legend()
 axs[0, 1].grid(True)
 
 # Plot 3: CE degradation vs Dictionary size (k=32)
-for sae_type in ['topk', 'butterfly', 'TopK - butterfly']:
+for sae_type in ['topk', 'butterfly_topk']:
     data = df[(df['config_sae_type'] == sae_type) & (df['k'] == 32)]
     data = data.sort_values(by='dictionary_size')
     axs[1, 0].plot(data['dictionary_size'], data['ce_degradation'], 
@@ -80,7 +79,7 @@ axs[1, 0].legend()
 axs[1, 0].grid(True)
 
 # Plot 4: CE degradation vs k (Dict size = 12288)
-for sae_type in ['topk', 'TopK - butterfly']:
+for sae_type in ['topk', 'butterfly_topk', 'butterfly']:
     data = df[(df['config_sae_type'] == sae_type) & (df['dictionary_size'] == 12288)]
     data = data.sort_values(by='k')
     axs[1, 1].plot(data['l0_norm'], data['ce_degradation'], 
@@ -95,42 +94,6 @@ axs[1, 1].grid(True)
 # Adjust layout and display the plot
 plt.tight_layout()
 # plt.show()
-plt.savefig('plots/results_v5.png')
+plt.savefig('plots/results.png')
 
 
-fig, axs = plt.subplots(1,2, figsize=(12, 8))
-
-# MSE vs dict size
-for sae_type in ['TopK - butterfly', 'butterfly']:
-    data = df[(df['config_sae_type'] == sae_type) & (df['k'] == 32)]
-    if sae_type == 'TopK - butterfly':
-        sae_type += ' (k=32)'
-    axs[0].plot(data['dictionary_size'], data['normalized_mse'], 
-                   marker='o', linestyle='--', label=f"{sae_type}")
-
-axs[0].set_title('Normalized MSE vs Dictionary size')
-axs[0].set_xlabel('Dictionary size')
-axs[0].set_ylabel('Normalized MSE')
-axs[0].set_xscale('log')
-axs[0].legend()
-axs[0].grid(True)
-
-
-# performance degredation vs dict size
-for sae_type in ['TopK - butterfly', 'butterfly']:
-    data = df[(df['config_sae_type'] == sae_type) & (df['k'] == 32)]
-    if sae_type == 'TopK - butterfly':
-        sae_type += ' (k=32)'
-    axs[1].plot(data['dictionary_size'], data['ce_degradation'], 
-                   marker='o', linestyle='--', label=f"{sae_type}")
-
-axs[1].set_title('CE degradation vs Dictionary size')
-axs[1].set_xlabel('Dictionary size')
-axs[1].set_ylabel('CE degradation')
-axs[1].set_xscale('log')
-axs[1].legend()
-axs[1].grid(True)
-
-
-plt.tight_layout()
-plt.savefig('plots/results_v4.png')
