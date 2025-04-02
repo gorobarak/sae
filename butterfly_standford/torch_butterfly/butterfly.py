@@ -5,11 +5,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-import torch_butterfly
-from torch_butterfly.multiply import butterfly_multiply
-from torch_butterfly.multiply import butterfly_multiply_torch
-from torch_butterfly.complex_utils import real_dtype_to_complex, complex_reshape
-from torch_butterfly.multiply_base4 import twiddle_base2_to_base4
+
+
+from .multiply import butterfly_multiply_torch
+from .complex_utils import real_dtype_to_complex, complex_reshape
+from .multiply_base4 import twiddle_base2_to_base4
 
 
 class Butterfly(nn.Module):
@@ -139,11 +139,11 @@ class Butterfly(nn.Module):
         if conjugate and self.complex:
             twiddle = twiddle.conj()
         if not transpose:
-            output = butterfly_multiply(twiddle, output, self.increasing_stride, output_size)
+            output = butterfly_multiply_torch(twiddle, output, self.increasing_stride, output_size)
         else:
             twiddle = twiddle.transpose(-1, -2).flip([1, 2])
             last_increasing_stride = self.increasing_stride != ((self.nblocks - 1) % 2 == 1)
-            output = butterfly_multiply(twiddle, output, not last_increasing_stride, output_size)
+            output = butterfly_multiply_torch(twiddle, output, not last_increasing_stride, output_size)
         if not subtwiddle:
             return self.post_process(input, output)
         else:
@@ -289,11 +289,11 @@ class ButterflyUnitary(Butterfly):
         if conjugate and self.complex:
             twiddle = twiddle.conj()
         if not transpose:
-            output = butterfly_multiply(twiddle, output, self.increasing_stride, output_size)
+            output = butterfly_multiply_torch(twiddle, output, self.increasing_stride, output_size)
         else:
             twiddle = twiddle.transpose(-1, -2).flip([1, 2])
             last_increasing_stride = self.increasing_stride != ((self.nblocks - 1) % 2 == 1)
-            output = butterfly_multiply(twiddle, output, not last_increasing_stride, output_size)
+            output = butterfly_multiply_torch(twiddle, output, not last_increasing_stride, output_size)
         if not subtwiddle:
             return self.post_process(input, output)
         else:

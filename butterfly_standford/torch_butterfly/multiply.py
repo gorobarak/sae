@@ -5,24 +5,24 @@ import torch
 from torch.nn import functional as F
 
 
-@torch.jit.script
-def butterfly_multiply_fw(twiddle: torch.Tensor, input: torch.Tensor, increasing_stride: bool,
-                          output_size: Optional[int] = None) -> torch.Tensor:
-    return torch.ops.torch_butterfly.butterfly_multiply_fw(twiddle, input, increasing_stride,
-                                                           output_size)
+# @torch.jit.script
+# def butterfly_multiply_fw(twiddle: torch.Tensor, input: torch.Tensor, increasing_stride: bool,
+#                           output_size: Optional[int] = None) -> torch.Tensor:
+#     return torch.ops.torch_butterfly.butterfly_multiply_fw(twiddle, input, increasing_stride,
+#                                                            output_size)
 
 
-@torch.jit.script
-def butterfly_multiply_bw(twiddle: torch.Tensor, input: torch.Tensor, grad: torch.Tensor,
-                          increasing_stride: bool) -> Tuple[torch.Tensor, torch.Tensor]:
-    return torch.ops.torch_butterfly.butterfly_multiply_bw(twiddle, input, grad, increasing_stride)
+# @torch.jit.script
+# def butterfly_multiply_bw(twiddle: torch.Tensor, input: torch.Tensor, grad: torch.Tensor,
+#                           increasing_stride: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+#     return torch.ops.torch_butterfly.butterfly_multiply_bw(twiddle, input, grad, increasing_stride)
 
 
-@torch.jit.script
-def butterfly_multiply(twiddle: torch.Tensor, input: torch.Tensor, increasing_stride: bool,
-                       output_size: Optional[int] = None) -> torch.Tensor:
-    return torch.ops.torch_butterfly.butterfly_multiply(twiddle, input, increasing_stride,
-                                                        output_size)
+# @torch.jit.script
+# def butterfly_multiply(twiddle: torch.Tensor, input: torch.Tensor, increasing_stride: bool,
+#                        output_size: Optional[int] = None) -> torch.Tensor:
+#     return torch.ops.torch_butterfly.butterfly_multiply(twiddle, input, increasing_stride,
+#                                                         output_size)
 
 
 def butterfly_multiply_torch(twiddle, input, increasing_stride=True, output_size=None):

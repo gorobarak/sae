@@ -32,20 +32,15 @@ def check_cuda_version():
 
 # check_cuda_version()
 from .butterfly import Butterfly, ButterflyUnitary, ButterflyBmm  # noqa
-from .butterfly_base4 import ButterflyBase4  # noqa
-from .multiply import butterfly_multiply  # noqa
-from . import combine
-from . import complex_utils
-from . import diagonal
-from . import permutation
-from . import special
-from . import multiply_base4
+
+from .multiply import butterfly_multiply_torch  # noqa
+
 
 __all__ = [
     'Butterfly',
     'ButterflyUnitary',
     'ButterflyBmm',
     'ButterflyBase4',
-    'butterfly_multiply',
+    'butterfly_multiply_torch',
     '__version__',
 ]
