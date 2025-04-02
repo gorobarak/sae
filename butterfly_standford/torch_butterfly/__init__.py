@@ -5,10 +5,10 @@ import torch
 
 __version__ = '0.0.0'
 
-for library in ['_version', '_butterfly']:
-    torch.ops.load_library(importlib.machinery.PathFinder().find_spec(
-        # need str(Path) otherwise it can't find it
-        library, [str(Path(__file__).absolute().parent)]).origin)
+# for library in ['_version', '_butterfly']:
+#     torch.ops.load_library(importlib.machinery.PathFinder().find_spec(
+#         # need str(Path) otherwise it can't find it
+#         library, [str(Path(__file__).absolute().parent)]).origin)
 
 def check_cuda_version():
     if torch.version.cuda is not None:  # pragma: no cover
@@ -30,7 +30,7 @@ def check_cuda_version():
                 f'{major}.{minor}. Please reinstall the torch_butterfly that '
                 f'matches your PyTorch install.')
 
-check_cuda_version()
+# check_cuda_version()
 from .butterfly import Butterfly, ButterflyUnitary, ButterflyBmm  # noqa
 from .butterfly_base4 import ButterflyBase4  # noqa
 from .multiply import butterfly_multiply  # noqa
