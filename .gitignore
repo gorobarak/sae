@@ -7,3 +7,5 @@ run_exps/
 plots/
 playground.py
 slurm.slurm
+butterfly_comperasion.err
+butterfly_comperasion.out

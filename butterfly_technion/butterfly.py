@@ -1,5 +1,6 @@
 import math
-
+import pdb
+import accelerate
 import torch
 from torch import nn
 
@@ -103,3 +104,47 @@ class Butterfly(nn.Module):
             self.in_size, self.out_size, self.bias is not None, self.complex, self.tied_weight, self.increasing_stride, self.ortho_init
         )
 
+    def get_rows(self, bool_array):
+        """
+        Returns e_i @ butterfly for e_i being the ith element in the standard basis
+        The i's are determined by the bool_array
+
+        """
+        mini_batch = 1024
+        device = bool_array.device
+        acc = []
+        indices = torch.where(bool_array)[0].tolist()
+        assert len(indices) == bool_array.sum(), f'len indicies {len(indices)} not equal bool_array.sum() {bool_array.sum()}'
+        for i in range(0, len(indices), mini_batch):
+            curr_indices = indices[i : i + mini_batch]
+            actual_size = len(curr_indices)
+            input = torch.zeros(actual_size, self.in_size, device=device)
+            for j, index in enumerate(curr_indices):
+                input[j, index] = 1
+            
+            
+            # Their code starts >>>>>>>>>>>>>
+            batch = input.shape[0]
+            output = input
+            if self.in_size != self.in_size_extended:  # Zero-pad
+                padded_shape = (batch, self.in_size_extended - self.in_size) + (() if not self.complex else (2, ))
+                output = torch.cat((output, torch.zeros(padded_shape, dtype=output.dtype, device=output.device)),
+                                    dim=-1 if not self.complex else -2)
+            output = butterfly_mult(self.twiddle, output, self.increasing_stride) if self.tied_weight else butterfly_mult_untied(self.twiddle, output, self.increasing_stride)
+            output = output.view((batch, self.nstack * self.in_size_extended) + (() if not self.complex else (2, )))
+            out_size_extended = 1 << (int(math.ceil(math.log2(self.out_size))))
+            if (self.in_size_extended // out_size_extended >= 2):  # Average instead of just take the top rows
+                if not self.complex:
+                    output = output.view(batch, self.in_size_extended // out_size_extended, out_size_extended).mean(dim=1)
+                else:
+                    output = output.view(batch, self.in_size_extended // out_size_extended, out_size_extended, 2).mean(dim=1)
+            if self.out_size != out_size_extended:  # Take top rows
+                output = output[:, :self.out_size]
+            # Their code ends <<<<<<<<<<<<< 
+            acc.append(output)
+
+        output = torch.cat(acc, dim=0)
+    
+        return output
+        
+        # return output = output.

@@ -34,10 +34,8 @@ def BF(input_dim,output_dim):
 
     n1,n2 = input_dim, output_dim
     k1,k2 = calc_k_function(n1,n2)
-    first_gadget = Butterfly(in_size=n1, out_size=k1, bias=False, complex=False,
-                              tied_weight=False, increasing_stride=True, ortho_init=True)
+    first_gadget = Butterfly(in_size=n1, out_size=k1, bias=False, tied_weight=False)
     second_gadget = nn.Linear(k1,k2,bias=False)
-    third_gadget = Butterfly(in_size=k2, out_size = n2, bias=False, complex=False,
-                              tied_weight=False, increasing_stride=True, ortho_init=True)
+    third_gadget = Butterfly(in_size=k2, out_size = n2, bias=False, tied_weight=False)
     
     return nn.Sequential(first_gadget,second_gadget,third_gadget)

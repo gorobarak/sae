@@ -4,8 +4,8 @@ sys.path.insert(0, project_root)
 
 import torch
 
-from butterfly import Butterfly
-from butterfly.butterfly_multiply import butterfly_mult, butterfly_mult_factors, butterfly_mult_inplace
+from .butterfly import Butterfly
+from .butterfly.butterfly_multiply import butterfly_mult, butterfly_mult_factors, butterfly_mult_inplace
 
 batch_size = 256
 n = 1024

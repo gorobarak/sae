@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
-from butterfly import BF
+from butterfly_standford.torch_butterfly import Butterfly, ButterflyUnitary
+import numpy as np
 import pdb
 
 
@@ -181,7 +182,36 @@ class TopKSAE(BaseAutoencoder):
     Where e = x - x^
     """
     def get_auxiliary_loss(self, x, x_reconstruct, acts):
-        dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        # >>>>>>>>>> New implementaion >>>>>>>>>>>
+        
+        # dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        # if dead_features.sum() > 0:
+        #     residual = x.float() - x_reconstruct.float()
+        #     mask = torch.zeros_like(acts)
+        #     mask[:, dead_features] = 1
+        #     dead_features_acts = acts * mask
+        #     acts_topk_aux = torch.topk(
+        #         dead_features_acts,
+        #         min(self.cfg["top_k_aux"], dead_features.sum()),
+        #         dim=-1,
+        #     )
+        #     acts_aux = torch.zeros_like(dead_features_acts).scatter(
+        #         -1, acts_topk_aux.indices, acts_topk_aux.values
+        #     )
+        #     x_reconstruct_aux = acts_aux @ self.W_dec
+        #     l2_loss_aux = (
+        #         self.cfg["aux_penalty"]
+        #         * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+        #     )
+        #     return l2_loss_aux
+        # else:
+        #     return torch.tensor(0, dtype=x.dtype, device=x.device)
+        
+        # <<<<<<<<<< New implementation END <<<<<<<<<<<<
+        
+        # >>>>>>>>> Original implementation >>>>>>>>
+
+        dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"] 
         if dead_features.sum() > 0:
             residual = x.float() - x_reconstruct.float()
             acts_topk_aux = torch.topk(
@@ -192,7 +222,7 @@ class TopKSAE(BaseAutoencoder):
             acts_aux = torch.zeros_like(acts[:, dead_features]).scatter(
                 -1, acts_topk_aux.indices, acts_topk_aux.values
             )
-            x_reconstruct_aux = acts_aux @ self.W_dec[dead_features]
+            x_reconstruct_aux = acts_aux @ self.W_dec[dead_features] 
             l2_loss_aux = (
                 self.cfg["aux_penalty"]
                 * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
@@ -201,10 +231,14 @@ class TopKSAE(BaseAutoencoder):
         else:
             return torch.tensor(0, dtype=x.dtype, device=x.device)
 
+        # <<<<<<<<< Original implementation END <<<<<<<<
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        # Disabled since not applicable in BF, so the have a fair comparison 
-        pass
+        if self.cfg["normalize_decoder_weights_and_grad"]:
+            super().make_decoder_weights_and_grad_unit_norm()
+        else:
+            # Disabled since not applicable in BF/Buttefly, so the have a fair comparison 
+            pass
 
 class VanillaSAE(BaseAutoencoder):
     def __init__(self, cfg):
@@ -242,27 +276,27 @@ class VanillaSAE(BaseAutoencoder):
         }
         return output
 
-class ButterflyTopKSAE(BaseAutoencoder):
+class BF_TopKSAE(BaseAutoencoder):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.W_enc = None
         self.W_dec = None
-        self.BF_W_enc = BF(self.cfg["act_size"], self.cfg["dict_size"])
-        self.BF_W_dec = BF(self.cfg["dict_size"], self.cfg["act_size"])
-
+        self.W_enc_new = BF(self.cfg["act_size"], self.cfg["dict_size"])
+        self.W_dec_new = BF(self.cfg["dict_size"], self.cfg["act_size"])
+        
         self.to(cfg["dtype"]).to(cfg["device"])
     
     def forward(self, x):
         x, x_mean, x_std = self.preprocess_input(x)
 
         x_cent = x - self.b_dec
-        acts = F.relu(self.BF_W_enc(x_cent) + self.b_enc)
+        acts = F.relu(self.W_enc_new(x_cent) + self.b_enc)
         acts_topk = torch.topk(acts, self.cfg["top_k"], dim=-1)
         acts_topk = torch.zeros_like(acts).scatter(
             -1, acts_topk.indices, acts_topk.values
         )
 
-        x_reconstruct = self.BF_W_dec(acts_topk) + self.b_dec
+        x_reconstruct = self.W_dec_new(acts_topk) + self.b_dec
         
         self.update_inactive_features(acts_topk)
         
@@ -309,7 +343,7 @@ class ButterflyTopKSAE(BaseAutoencoder):
             acts_aux = torch.zeros_like(dead_features_acts).scatter(
                 -1, acts_topk_aux.indices, acts_topk_aux.values
             )
-            x_reconstruct_aux = self.BF_W_dec(acts_aux)
+            x_reconstruct_aux = self.W_dec_new(acts_aux)
             l2_loss_aux = (
                 self.cfg["aux_penalty"]
                 * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
@@ -320,16 +354,16 @@ class ButterflyTopKSAE(BaseAutoencoder):
     
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        # Not applicable with butterfly modules
+        # Disabled since not applicable in BF/Buttefly, so the have a fair comparison 
         pass
 
-class ButterflySAE(BaseAutoencoder):
+class BF_SAE(BaseAutoencoder):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.W_enc = None
         self.W_dec = None
-        self.BF_W_enc = BF(self.cfg["act_size"], self.cfg["dict_size"])
-        self.BF_W_dec = BF(self.cfg["dict_size"], self.cfg["act_size"])
+        self.W_enc_new = BF(self.cfg["act_size"], self.cfg["dict_size"])
+        self.W_dec_new = BF(self.cfg["dict_size"], self.cfg["act_size"])
 
         self.to(cfg["dtype"]).to(cfg["device"])
     
@@ -337,9 +371,9 @@ class ButterflySAE(BaseAutoencoder):
         x, x_mean, x_std = self.preprocess_input(x)
 
         x_cent = x - self.b_dec
-        acts = F.relu(self.BF_W_enc(x_cent) + self.b_enc)
+        acts = F.relu(self.W_enc_new(x_cent) + self.b_enc)
 
-        x_reconstruct = self.BF_W_dec(acts) + self.b_dec
+        x_reconstruct = self.W_dec_new(acts) + self.b_dec
         
         self.update_inactive_features(acts)
         
@@ -373,7 +407,377 @@ class ButterflySAE(BaseAutoencoder):
     
     @torch.no_grad()
     def make_decoder_weights_and_grad_unit_norm(self):
-        # not applicable for BF module  
+        # Disabled since not applicable in BF/Buttefly, so the have a fair comparison   
+        pass
+
+class ButterflyTopKSAE(BaseAutoencoder):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.W_enc = None
+        self.W_dec = None
+        self.W_enc_new = Butterfly(self.cfg["act_size"], self.cfg["dict_size"], bias=False)
+        self.W_dec_new = Butterfly(self.cfg["dict_size"], self.cfg["act_size"], bias=False)
+
+        self.to(cfg["dtype"]).to(cfg["device"])
+    
+    def forward(self, x):
+        x, x_mean, x_std = self.preprocess_input(x)
+
+        x_cent = x - self.b_dec
+        acts = F.relu(self.W_enc_new(x_cent))
+        acts_topk = torch.topk(acts, self.cfg["top_k"], dim=-1)
+        acts_topk = torch.zeros_like(acts).scatter(
+            -1, acts_topk.indices, acts_topk.values
+        )
+
+        x_reconstruct = self.W_dec_new(acts_topk) + self.b_dec
+        
+        self.update_inactive_features(acts_topk)
+        
+        output = self.get_loss_dict(x, x_reconstruct, acts, acts_topk,  x_mean, x_std)
+        return output
+    
+    def get_loss_dict(self, x, x_reconstruct, acts, acts_topk,  x_mean, x_std):
+        l2_loss = (x_reconstruct.float() - x.float()).pow(2).mean()
+        l1_norm = acts_topk.float().abs().sum(-1).mean()
+        l0_norm = (acts_topk > 0).float().sum(-1).mean()
+        aux_loss = self.get_auxiliary_loss(x, x_reconstruct, acts)
+
+        loss = l2_loss + aux_loss 
+        
+        num_dead_features = (
+            self.num_batches_not_active > self.cfg["n_batches_to_dead"]
+        ).sum()
+        sae_out = self.postprocess_output(x_reconstruct, x_mean, x_std)
+
+        output = {
+            "sae_out": sae_out,
+            "feature_acts": acts_topk,
+            "num_dead_features": num_dead_features,
+            "loss": loss,
+            "l2_loss": l2_loss,
+            "l0_norm": l0_norm,
+            "l1_norm": l1_norm,
+            "aux_loss": aux_loss
+        }
+        return output
+    
+    def get_auxiliary_loss(self, x, x_reconstruct, acts):
+        
+        dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        if dead_features.sum() > 0:
+            residual = x.float() - x_reconstruct.float()
+            mask = torch.zeros_like(acts)
+            mask[:, dead_features] = 1
+            dead_features_acts = acts * mask
+            acts_topk_aux = torch.topk(
+                dead_features_acts,
+                min(self.cfg["top_k_aux"], dead_features.sum()),
+                dim=-1,
+            )
+            acts_aux = torch.zeros_like(dead_features_acts).scatter(
+                -1, acts_topk_aux.indices, acts_topk_aux.values
+            )
+            x_reconstruct_aux = self.W_dec_new(acts_aux)
+            l2_loss_aux = (
+                self.cfg["aux_penalty"]
+                * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+            )
+            return l2_loss_aux
+        else:
+            return torch.tensor(0, dtype=x.dtype, device=x.device)
+        
+
+        # dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        # if dead_features.sum() > 0:
+        #     residual = x.float() - x_reconstruct.float()
+        #     acts_topk_aux = torch.topk(
+        #         acts[:,dead_features],
+        #         min(self.cfg["top_k_aux"], dead_features.sum()),
+        #         dim=-1,
+        #     )
+        #     acts_aux = torch.zeros_like(acts[:, dead_features]).scatter(
+        #         -1, acts_topk_aux.indices, acts_topk_aux.values
+        #     )
+        #     # pdb.set_trace()
+        #     dead_features_cols = self.W_dec_new.get_rows(dead_features)
+        #     x_reconstruct_aux = acts_aux @ dead_features_cols
+        #     l2_loss_aux = (
+        #         self.cfg["aux_penalty"]
+        #         * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+        #     )
+        #     return l2_loss_aux
+        # else:
+        #     return torch.tensor(0, dtype=x.dtype, device=x.device)
+    
+    @torch.no_grad()
+    def make_decoder_weights_and_grad_unit_norm(self):
+        # Disabled since not applicable in BF/Buttefly, so the have a fair comparison 
+        pass
+
+class ButterflyUnitaryTopKSAE(BaseAutoencoder):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.W_enc = None
+        self.W_dec = None
+        self.W_enc_new = ButterflyUnitary(self.cfg["act_size"], self.cfg["dict_size"], bias=False)
+        self.W_dec_new = ButterflyUnitary(self.cfg["dict_size"], self.cfg["act_size"], bias=False)
+
+        self.to(cfg["dtype"]).to(cfg["device"])
+    
+    def forward(self, x):
+        x, x_mean, x_std = self.preprocess_input(x)
+
+        x_cent = x - self.b_dec
+        pdb.set_trace()
+        out = self.W_enc_new(x_cent)
+        acts = F.relu(out)
+        acts_topk = torch.topk(acts, self.cfg["top_k"], dim=-1)
+        acts_topk = torch.zeros_like(acts).scatter(
+            -1, acts_topk.indices, acts_topk.values
+        )
+
+        x_reconstruct = self.W_dec_new(acts_topk) + self.b_dec
+        
+        self.update_inactive_features(acts_topk)
+        
+        output = self.get_loss_dict(x, x_reconstruct, acts, acts_topk,  x_mean, x_std)
+        return output
+    
+    def get_loss_dict(self, x, x_reconstruct, acts, acts_topk,  x_mean, x_std):
+        l2_loss = (x_reconstruct.float() - x.float()).pow(2).mean()
+        l1_norm = acts_topk.float().abs().sum(-1).mean()
+        l0_norm = (acts_topk > 0).float().sum(-1).mean()
+        aux_loss = self.get_auxiliary_loss(x, x_reconstruct, acts)
+
+        loss = l2_loss + aux_loss 
+        
+        num_dead_features = (
+            self.num_batches_not_active > self.cfg["n_batches_to_dead"]
+        ).sum()
+        sae_out = self.postprocess_output(x_reconstruct, x_mean, x_std)
+
+        output = {
+            "sae_out": sae_out,
+            "feature_acts": acts_topk,
+            "num_dead_features": num_dead_features,
+            "loss": loss,
+            "l2_loss": l2_loss,
+            "l0_norm": l0_norm,
+            "l1_norm": l1_norm,
+            "aux_loss": aux_loss
+        }
+        return output
+    
+    def get_auxiliary_loss(self, x, x_reconstruct, acts):
+        
+        dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        if dead_features.sum() > 0:
+            residual = x.float() - x_reconstruct.float()
+            mask = torch.zeros_like(acts)
+            mask[:, dead_features] = 1
+            dead_features_acts = acts * mask
+            acts_topk_aux = torch.topk(
+                dead_features_acts,
+                min(self.cfg["top_k_aux"], dead_features.sum()),
+                dim=-1,
+            )
+            acts_aux = torch.zeros_like(dead_features_acts).scatter(
+                -1, acts_topk_aux.indices, acts_topk_aux.values
+            )
+            x_reconstruct_aux = self.W_dec_new(acts_aux)
+            l2_loss_aux = (
+                self.cfg["aux_penalty"]
+                * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+            )
+            return l2_loss_aux
+        else:
+            return torch.tensor(0, dtype=x.dtype, device=x.device)
+        
+
+        # dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        # if dead_features.sum() > 0:
+        #     residual = x.float() - x_reconstruct.float()
+        #     acts_topk_aux = torch.topk(
+        #         acts[:,dead_features],
+        #         min(self.cfg["top_k_aux"], dead_features.sum()),
+        #         dim=-1,
+        #     )
+        #     acts_aux = torch.zeros_like(acts[:, dead_features]).scatter(
+        #         -1, acts_topk_aux.indices, acts_topk_aux.values
+        #     )
+        #     # pdb.set_trace()
+        #     dead_features_cols = self.W_dec_new.get_rows(dead_features)
+        #     x_reconstruct_aux = acts_aux @ dead_features_cols
+        #     l2_loss_aux = (
+        #         self.cfg["aux_penalty"]
+        #         * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+        #     )
+        #     return l2_loss_aux
+        # else:
+        #     return torch.tensor(0, dtype=x.dtype, device=x.device)
+    
+    @torch.no_grad()
+    def make_decoder_weights_and_grad_unit_norm(self):
+        # Disabled since not applicable in BF/Buttefly, so the have a fair comparison 
+        pass
+
+
+class ButterflySAE(BaseAutoencoder):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.W_enc = None
+        self.W_dec = None
+        self.W_enc_new = Butterfly(self.cfg["act_size"], self.cfg["dict_size"], bias=False, tied_weight=False)
+        self.W_dec_new = Butterfly(self.cfg["dict_size"], self.cfg["act_size"], bias=False, tied_weight=False)
+
+        self.to(cfg["dtype"]).to(cfg["device"])
+    
+    def forward(self, x):
+        x, x_mean, x_std = self.preprocess_input(x)
+
+        x_cent = x - self.b_dec
+        acts = F.relu(self.W_enc_new(x_cent) + self.b_enc)
+
+        x_reconstruct = self.W_dec_new(acts) + self.b_dec
+        
+        self.update_inactive_features(acts)
+        
+        output = self.get_loss_dict(x, x_reconstruct, acts, x_mean, x_std)
+        return output
+    
+    def get_loss_dict(self, x, x_reconstruct, acts, x_mean, x_std):
+        l2_loss = (x_reconstruct.float() - x.float()).pow(2).mean()
+        l1_norm = acts.float().abs().sum(-1).mean()
+        l1_loss = self.cfg['l1_coeff'] * l1_norm
+        l0_norm = (acts > 0).float().sum(-1).mean()
+
+        loss = l2_loss + l1_loss 
+        
+        num_dead_features = (
+            self.num_batches_not_active > self.cfg["n_batches_to_dead"]
+        ).sum()
+        sae_out = self.postprocess_output(x_reconstruct, x_mean, x_std)
+
+        output = {
+            "sae_out": sae_out,
+            "feature_acts": acts,
+            "num_dead_features": num_dead_features,
+            "loss": loss,
+            "l2_loss": l2_loss,
+            "l1_loss": l1_loss,
+            "l0_norm": l0_norm,
+            "l1_norm": l1_norm
+        }
+        return output
+    
+    @torch.no_grad()
+    def make_decoder_weights_and_grad_unit_norm(self):
+        # Disabled since not applicable in BF/Buttefly, so the have a fair comparison
+        pass
+
+class OurButterflyTopKSAE(BaseAutoencoder):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.W_enc = None
+        self.W_dec = None
+        self.W_enc_new = OurButterflyLayer(self.cfg["act_size"], self.cfg["dict_size"])
+        self.W_dec_new = OurButterflyLayer(self.cfg["dict_size"], self.cfg["act_size"])
+
+        self.to(cfg["dtype"]).to(cfg["device"])
+    
+    def forward(self, x):
+        x, x_mean, x_std = self.preprocess_input(x)
+
+        x_cent = x - self.b_dec
+        acts = F.relu(self.W_enc_new(x_cent))
+        acts_topk = torch.topk(acts, self.cfg["top_k"], dim=-1)
+        acts_topk = torch.zeros_like(acts).scatter(
+            -1, acts_topk.indices, acts_topk.values
+        )
+        x_reconstruct = self.W_dec_new(acts_topk) + self.b_dec
+        
+        self.update_inactive_features(acts_topk)
+        
+        output = self.get_loss_dict(x, x_reconstruct, acts, acts_topk, x_mean, x_std)
+        return output
+    
+    def get_loss_dict(self, x, x_reconstruct, acts, acts_topk,  x_mean, x_std):
+        l2_loss = (x_reconstruct.float() - x.float()).pow(2).mean()
+        l1_norm = acts_topk.float().abs().sum(-1).mean()
+        l0_norm = (acts_topk > 0).float().sum(-1).mean()
+        aux_loss = self.get_auxiliary_loss(x, x_reconstruct, acts)
+
+        loss = l2_loss + aux_loss 
+        
+        num_dead_features = (
+            self.num_batches_not_active > self.cfg["n_batches_to_dead"]
+        ).sum()
+        sae_out = self.postprocess_output(x_reconstruct, x_mean, x_std)
+
+        output = {
+            "sae_out": sae_out,
+            "feature_acts": acts_topk,
+            "num_dead_features": num_dead_features,
+            "loss": loss,
+            "l2_loss": l2_loss,
+            "l0_norm": l0_norm,
+            "l1_norm": l1_norm,
+            "aux_loss": aux_loss
+        }
+        return output
+    
+    def get_auxiliary_loss(self, x, x_reconstruct, acts):
+        
+        dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        if dead_features.sum() > 0:
+            residual = x.float() - x_reconstruct.float()
+            mask = torch.zeros_like(acts)
+            mask[:, dead_features] = 1
+            dead_features_acts = acts * mask
+            acts_topk_aux = torch.topk(
+                dead_features_acts,
+                min(self.cfg["top_k_aux"], dead_features.sum()),
+                dim=-1,
+            )
+            acts_aux = torch.zeros_like(dead_features_acts).scatter(
+                -1, acts_topk_aux.indices, acts_topk_aux.values
+            )
+            x_reconstruct_aux = self.W_dec_new(acts_aux)
+            l2_loss_aux = (
+                self.cfg["aux_penalty"]
+                * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+            )
+            return l2_loss_aux
+        else:
+            return torch.tensor(0, dtype=x.dtype, device=x.device)
+        
+
+        # dead_features = self.num_batches_not_active >= self.cfg["n_batches_to_dead"]
+        # if dead_features.sum() > 0:
+        #     residual = x.float() - x_reconstruct.float()
+        #     acts_topk_aux = torch.topk(
+        #         acts[:,dead_features],
+        #         min(self.cfg["top_k_aux"], dead_features.sum()),
+        #         dim=-1,
+        #     )
+        #     acts_aux = torch.zeros_like(acts[:, dead_features]).scatter(
+        #         -1, acts_topk_aux.indices, acts_topk_aux.values
+        #     )
+        #     # pdb.set_trace()
+        #     dead_features_cols = self.W_dec_new.get_rows(dead_features)
+        #     x_reconstruct_aux = acts_aux @ dead_features_cols
+        #     l2_loss_aux = (
+        #         self.cfg["aux_penalty"]
+        #         * (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+        #     )
+        #     return l2_loss_aux
+        # else:
+        #     return torch.tensor(0, dtype=x.dtype, device=x.device)
+    
+    @torch.no_grad()
+    def make_decoder_weights_and_grad_unit_norm(self):
+        # Disabled since not applicable in BF/Buttefly, so the have a fair comparison 
         pass
 
 class RectangleFunction(autograd.Function):
@@ -480,3 +884,51 @@ class JumpReLUSAE(BaseAutoencoder):
             "l1_norm": l0,
         }
         return output
+
+
+def get_butterfly(n, layer):
+    output = torch.zeros(n, n, device='cuda')
+    for j in range(n):
+        output[j, j ^ (2 ** layer)] = 1
+    
+    return output
+
+class OurButterflyLayer(nn.Module):
+
+    def __init__(self, in_size, out_size):
+        super().__init__()
+
+        self.in_size = in_size
+        self.out_size = out_size
+
+        # Pad input size up to power of 2
+        max_dim = max(in_size, out_size)
+        self.logN = int(np.ceil(np.log2(max_dim)))
+        self.N = 2 ** self.logN
+
+        # Choose output butterfly rows at random
+        self.out_row_indices = np.random.permutation(self.N)[:out_size]
+
+        # The learned parameters
+        self.learned_params = nn.Parameter(
+            torch.nn.init.kaiming_uniform_(
+                torch.empty(2*self.logN, self.N)
+            )
+        )
+    
+
+    def forward(self, input):
+
+        # Construct butterfly matrix: composition of logN butterfly layers
+        B = torch.eye(self.N, device='cuda')
+        for i in range(self.logN):
+            # D1 = torch.diag(self.learned_params[2*i, :])
+            # D2 = torch.diag(self.learned_params[2*i+1, :])
+            # B = (D1 + (get_butterfly(self.N, i) @ D2)) @ B
+
+            B = (torch.diag(self.learned_params[2*i, :]) + (get_butterfly(self.N, i) @ torch.diag(self.learned_params[2*i+1, :]))) @ B
+
+
+        self.layer_matrix = B[self.out_row_indices, :self.in_size]
+        
+        return input @ self.layer_matrix.T

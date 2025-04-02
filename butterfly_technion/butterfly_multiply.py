@@ -7,10 +7,10 @@ from .complex_utils import complex_mul
 
 use_extension = True
 try:
-    from factor_multiply import butterfly_multiply_intermediate, butterfly_multiply_intermediate_backward
-    from factor_multiply import butterfly_multiply_untied, butterfly_multiply_untied_backward
-    from factor_multiply import butterfly_multiply_inplace, butterfly_multiply_inplace_backward
-    from factor_multiply import butterfly_factor_multiply, butterfly_factor_multiply_backward
+    from .factor_multiply import butterfly_multiply_intermediate, butterfly_multiply_intermediate_backward
+    from .factor_multiply import butterfly_multiply_untied, butterfly_multiply_untied_backward
+    from .factor_multiply import butterfly_multiply_inplace, butterfly_multiply_inplace_backward
+    from .factor_multiply import butterfly_factor_multiply, butterfly_factor_multiply_backward
 except:
     use_extension = False
     import warnings
