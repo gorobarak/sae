@@ -1,0 +1,11 @@
+__pycache__/
+venv/
+wandb/
+checkpoints/
+exploration/
+run_exps/
+plots/
+playground.py
+slurm.slurm
+butterfly_comperasion.err
+butterfly_comperasion.out
