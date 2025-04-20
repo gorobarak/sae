@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
+from zmq import device
 from butterfly_standford.torch_butterfly import Butterfly, ButterflyUnitary
+from butterfly_technion import Butterfly as ButterflyTechnion
 import numpy as np
 import pdb
 
@@ -415,8 +417,12 @@ class ButterflyTopKSAE(BaseAutoencoder):
         super().__init__(cfg)
         self.W_enc = None
         self.W_dec = None
-        self.W_enc_new = Butterfly(self.cfg["act_size"], self.cfg["dict_size"], bias=False)
-        self.W_dec_new = Butterfly(self.cfg["dict_size"], self.cfg["act_size"], bias=False)
+        if cfg["butterfly_type"] == "technion":
+            self.W_enc_new = ButterflyTechnion(self.cfg["act_size"], self.cfg["dict_size"], bias=False)
+            self.W_dec_new = ButterflyTechnion(self.cfg["dict_size"], self.cfg["act_size"], bias=False)
+        else:
+            self.W_enc_new = Butterfly(self.cfg["act_size"], self.cfg["dict_size"], bias=False)
+            self.W_dec_new = Butterfly(self.cfg["dict_size"], self.cfg["act_size"], bias=False)
 
         self.to(cfg["dtype"]).to(cfg["device"])
     
@@ -628,8 +634,8 @@ class ButterflySAE(BaseAutoencoder):
         super().__init__(cfg)
         self.W_enc = None
         self.W_dec = None
-        self.W_enc_new = Butterfly(self.cfg["act_size"], self.cfg["dict_size"], bias=False, tied_weight=False)
-        self.W_dec_new = Butterfly(self.cfg["dict_size"], self.cfg["act_size"], bias=False, tied_weight=False)
+        self.W_enc_new = Butterfly(self.cfg["act_size"], self.cfg["dict_size"], bias=False)
+        self.W_dec_new = Butterfly(self.cfg["dict_size"], self.cfg["act_size"], bias=False)
 
         self.to(cfg["dtype"]).to(cfg["device"])
     
@@ -910,25 +916,31 @@ class OurButterflyLayer(nn.Module):
         self.out_row_indices = np.random.permutation(self.N)[:out_size]
 
         # The learned parameters
-        self.learned_params = nn.Parameter(
-            torch.nn.init.kaiming_uniform_(
-                torch.empty(2*self.logN, self.N)
-            )
-        )
-    
+        self.learned_params = torch.nn.init.kaiming_uniform_(torch.empty(2*self.logN, self.N))
+        self.learned_params = self.learned_params.to('cuda') 
 
+        # Construct butterfly matrix: composition of logN butterfly layers
+        self.B = torch.eye(self.N, device='cuda')
+        for i in range(self.logN):
+            D1 = torch.diag(self.learned_params[2*i, :])
+            D2 = torch.diag(self.learned_params[2*i+1, :])
+            self.B = (D1 + (get_butterfly(self.N, i) @ D2)) @ self.B
+    
+        self.layer_matrix = self.B[ :self.in_size, self.out_row_indices,]
+        self.layer_matrix = nn.Parameter(self.layer_matrix)
+        self.to('cuda')
+    
     def forward(self, input):
 
         # Construct butterfly matrix: composition of logN butterfly layers
-        B = torch.eye(self.N, device='cuda')
-        for i in range(self.logN):
-            # D1 = torch.diag(self.learned_params[2*i, :])
-            # D2 = torch.diag(self.learned_params[2*i+1, :])
-            # B = (D1 + (get_butterfly(self.N, i) @ D2)) @ B
-
-            B = (torch.diag(self.learned_params[2*i, :]) + (get_butterfly(self.N, i) @ torch.diag(self.learned_params[2*i+1, :]))) @ B
+        # B = torch.eye(self.N, device='cuda')
+        # for i in range(self.logN):
+        #     D1 = torch.diag(self.learned_params[2*i, :])
+        #     D2 = torch.diag(self.learned_params[2*i+1, :])
+        #     B = (D1 + (get_butterfly(self.N, i) @ D2)) @ B
 
 
-        self.layer_matrix = B[self.out_row_indices, :self.in_size]
-        
-        return input @ self.layer_matrix.T
+
+        # self.matrix = B[:self.in_size, self.out_row_indices]
+
+        return input @ self.layer_matrix

@@ -47,7 +47,12 @@ def get_default_cfg():
         
         # JumpReLU
         "l1_coeff": 0,
-        "bandwidth": 0.001
+        "bandwidth": 0.001,
+
+        # Butterfly
+        "butterfly_type": "standford"
+
+
     }
     default_cfg = post_init_cfg(default_cfg)
     return default_cfg
