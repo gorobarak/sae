@@ -2,6 +2,36 @@ import torch
 import tqdm
 from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
 
+
+
+def train_classifier(pretrained_sae, classifier, activation_store, cfg):
+    num_batches = cfg["tokens"] // cfg["batch_size"]
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    cfg['name'] = "classifier_" + cfg['name']
+    wandb_run = init_wandb(cfg)
+
+    pbar = range(num_batches)
+    for i in pbar:
+        batch, labels = activation_store.next_batch()
+        
+        with torch.no_grad():
+            sae_output = pretrained_sae(batch)
+        
+        latents = sae_output["latents"]
+        pred = classifier(latents)
+
+        loss = criterion(pred, labels)
+        
+        
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+
+        wandb_run.log({"loss": loss.item()}, i)
+
 def train_sae(sae, activation_store, model, cfg):
     num_batches = cfg["num_tokens"] // cfg["batch_size"]
     optimizer = torch.optim.Adam(sae.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
