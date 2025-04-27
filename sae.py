@@ -89,7 +89,7 @@ class BatchTopKSAE(BaseAutoencoder):
         l1_loss = self.cfg["l1_coeff"] * l1_norm
         l0_norm = (acts_topk > 0).float().sum(-1).mean()
         aux_loss = self.get_auxiliary_loss(x, x_reconstruct, acts)
-        loss = l2_loss + l1_loss + aux_loss
+        loss = l2_loss + aux_loss
         num_dead_features = (
             self.num_batches_not_active > self.cfg["n_batches_to_dead"]
         ).sum()
@@ -154,7 +154,7 @@ class TopKSAE(BaseAutoencoder):
         l1_loss = self.cfg["l1_coeff"] * l1_norm
         l0_norm = (acts_topk > 0).float().sum(-1).mean()
         aux_loss = self.get_auxiliary_loss(x, x_reconstruct, acts)
-        loss = l2_loss + l1_loss + aux_loss
+        loss = l2_loss + aux_loss
         num_dead_features = (
             self.num_batches_not_active > self.cfg["n_batches_to_dead"]
         ).sum()
