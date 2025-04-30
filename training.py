@@ -5,25 +5,29 @@ from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
 
 
 def train_classifier(pretrained_sae, classifier, activation_store, cfg):
-    num_batches = cfg["tokens"] // cfg["batch_size"]
     optimizer = torch.optim.Adam(classifier.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
     criterion = torch.nn.CrossEntropyLoss()
     
     cfg['name'] = "classifier_" + cfg['name']
     wandb_run = init_wandb(cfg)
 
-    pbar = range(num_batches)
-    for i in pbar:
-        batch, labels = activation_store.next_batch()
+    i = 0
+    while activation_store.has_next():
+        _, aggregate_activations, labels = activation_store.next_batch()
         
         with torch.no_grad():
-            sae_output = pretrained_sae(batch)
+            sae_output = pretrained_sae(aggregate_activations)
         
-        latents = sae_output["latents"]
-        pred = classifier(latents)
+        feature_acts = sae_output["feature_acts"]
+        pred = classifier(feature_acts)
 
         loss = criterion(pred, labels)
         
+        if i ==0:
+            print(f"Feature acts shape: {feature_acts.shape}")
+            print(f"Labels shape: {labels.shape}")
+            print(f"Pred shape: {pred.shape}")
+            print(f"Loss shape: {loss.shape}")
         
         loss.backward()
         optimizer.step()
@@ -31,6 +35,7 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
 
 
         wandb_run.log({"loss": loss.item()}, i)
+        i+=1
 
 def train_sae(sae, activation_store, model, cfg):
     num_batches = cfg["num_tokens"] // cfg["batch_size"]

@@ -37,7 +37,9 @@ class ActivationsStore:
         while len(all_tokens) < self.model_batch_size * self.context_size:
             batch = next(self.dataset)
             if self.tokens_column == "text":
-                tokens = self.model.to_tokens(batch["text"], truncate=True, move_to_device=True, prepend_bos=True).squeeze(0)
+                # Removed BOS token as GPT2 wasn't trained with it
+                # See reference: https://transformerlensorg.github.io/TransformerLens/generated/code/transformer_lens.HookedTransformer.html#transformer_lens.HookedTransformer.HookedTransformer.to_tokens
+                tokens = self.model.to_tokens(batch[self.tokens_column], truncate=True, move_to_device=True, prepend_bos=False).squeeze(0)
             else:
                 tokens = batch[self.tokens_column]
             all_tokens.extend(tokens)

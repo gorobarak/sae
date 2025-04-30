@@ -7,8 +7,8 @@ def get_default_cfg():
 
         # Training 
         "batch_size": 4096,
-        "lr": 3e-4,
         "num_tokens": int(1e9),
+        "lr": 3e-4,
         "beta1": 0.9,
         "beta2": 0.99,
         "max_grad_norm": 100000,
@@ -47,6 +47,10 @@ def get_default_cfg():
         # JumpRelu specific
         "bandwidth": 0.001,
         "l1_coeff": 0,
+
+        # Classification
+        "aggregate_function": "mean",
+        "num_samples_in_batch": 10,
     }
     default_cfg = post_init_cfg(default_cfg)
     return default_cfg
