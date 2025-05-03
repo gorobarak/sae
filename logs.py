@@ -10,7 +10,8 @@ def init_wandb(cfg):
 def log_wandb(output, step, wandb_run, index=None):
     metrics_to_log = ["loss", "l2_loss", "l1_loss", "l0_norm", "l1_norm", "aux_loss", "num_dead_features"]
     log_dict = {k: output[k].item() for k in metrics_to_log if k in output}
-    log_dict["n_dead_in_batch"] = (output["feature_acts"].sum(0) == 0).sum().item()
+    output_features_acts = output["feature_acts"].reshape(-1, output["feature_acts"].shape[-1])
+    log_dict["n_dead_in_batch"] = (output_features_acts.sum(0) == 0).sum().item()
 
     if index is not None:
         log_dict = {f"{k}_{index}": v for k, v in log_dict.items()}

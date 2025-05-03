@@ -144,7 +144,7 @@ class TopKSAE(BaseAutoencoder):
         )
         x_reconstruct = acts_topk @ self.W_dec + self.b_dec
 
-        self.update_inactive_features(acts_topk)
+        self.update_inactive_features(acts_topk.reshape(-1, self.cfg["dict_size"]))
         output = self.get_loss_dict(x, x_reconstruct, acts, acts_topk, x_mean, x_std)
         return output
 
@@ -177,11 +177,11 @@ class TopKSAE(BaseAutoencoder):
         if dead_features.sum() > 0:
             residual = x.float() - x_reconstruct.float()
             acts_topk_aux = torch.topk(
-                acts[:, dead_features],
+                acts[..., dead_features],
                 min(self.cfg["top_k_aux"], dead_features.sum()),
                 dim=-1,
             )
-            acts_aux = torch.zeros_like(acts[:, dead_features]).scatter(
+            acts_aux = torch.zeros_like(acts[..., dead_features]).scatter(
                 -1, acts_topk_aux.indices, acts_topk_aux.values
             )
             x_reconstruct_aux = acts_aux @ self.W_dec[dead_features]
