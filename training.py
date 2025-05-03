@@ -6,19 +6,24 @@ from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
 
 def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     optimizer = torch.optim.Adam(classifier.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
+    # optimizer = torch.optim.SGD(classifier.parameters(), lr=cfg["lr"], momentum=0.9)
     criterion = torch.nn.CrossEntropyLoss()
     
     wandb_run = init_wandb(cfg)
-
+    # testset_acts, testset_labels = activation_store.get_testset_activations()
     i = 0
     while activation_store.has_next():
-        _, aggregate_activations, labels = activation_store.next_batch()
+        acts, aggregate_activations, labels = activation_store.next_batch()
         
         input_to_classifier = aggregate_activations
         if not cfg["baseline"]:
             with torch.no_grad():
-                sae_output = pretrained_sae(aggregate_activations)
-            input_to_classifier = sae_output["feature_acts"]
+                sae_output = pretrained_sae(acts)
+            # aggregate along the sequence dimension
+            if cfg["aggregate_function"] == "mean":
+                input_to_classifier = sae_output["feature_acts"].mean(dim=-2)
+            elif cfg["aggregate_function"] == "max":
+                input_to_classifier = sae_output["feature_acts"].max(dim=-2).values
         
         pred = classifier(input_to_classifier)
 
@@ -28,7 +33,12 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
         optimizer.step()
         optimizer.zero_grad()
 
-        wandb_run.log({"ce_loss": loss.item()}, i)
+        # with torch.no_grad():
+        #     if []
+        #     testset_logits = classifier(testset_acts)
+        #     testset_predictions = torch.argmax(testset_logits, dim=1)
+        #     testset_accuracy = (testset_predictions == testset_labels).float().mean()
+        wandb_run.log({"ce_loss": loss.item(), "accuracy": 0}, i)
         i+=1
 
 def train_sae_supervised_data(sae, activation_store, model, cfg):

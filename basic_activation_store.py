@@ -101,9 +101,14 @@ class BasicActivationsStore:
         aggregate_activations = self._aggregate_activations(activations)
         
         # Reshape activations to (num_samples_in_batch * max_seq_len_in_batch, act_size)
-        activations = activations.reshape(-1, self.cfg["act_size"])
+        # activations = activations.reshape(-1, self.cfg["act_size"])
+        
         
         return  activations, aggregate_activations, labels
     
     def has_next(self):
         return self.current_batch < self.num_batches_in_dataset
+    
+
+    def get_testset_activations(self, baseline: bool = False):
+        pass
