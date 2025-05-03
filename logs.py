@@ -68,7 +68,7 @@ def log_model_performance(wandb_run, step, model, activations_store, sae, index=
     wandb_run.log(log_dict, step=step)
 
 def save_checkpoint(wandb_run, sae, cfg, step):
-    save_dir = f"checkpoints/{cfg['name']}_{step}"
+    save_dir = f"checkpoints/{cfg['name']}"
     os.makedirs(save_dir, exist_ok=True)
 
     # Save model state

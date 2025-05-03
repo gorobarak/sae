@@ -8,36 +8,57 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     optimizer = torch.optim.Adam(classifier.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
     criterion = torch.nn.CrossEntropyLoss()
     
-    cfg['name'] = "classifier_" + cfg['name']
     wandb_run = init_wandb(cfg)
 
     i = 0
     while activation_store.has_next():
         _, aggregate_activations, labels = activation_store.next_batch()
         
-        with torch.no_grad():
-            sae_output = pretrained_sae(aggregate_activations)
+        input_to_classifier = aggregate_activations
+        if not cfg["baseline"]:
+            with torch.no_grad():
+                sae_output = pretrained_sae(aggregate_activations)
+            input_to_classifier = sae_output["feature_acts"]
         
-        feature_acts = sae_output["feature_acts"]
-        pred = classifier(feature_acts)
+        pred = classifier(input_to_classifier)
 
         loss = criterion(pred, labels)
-        
-        if i ==0:
-            print(f"Feature acts shape: {feature_acts.shape}")
-            print(f"Labels shape: {labels.shape}")
-            print(f"Pred shape: {pred.shape}")
-            print(f"Loss shape: {loss.shape}")
         
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
-
-        wandb_run.log({"loss": loss.item()}, i)
+        wandb_run.log({"ce_loss": loss.item()}, i)
         i+=1
 
-def train_sae(sae, activation_store, model, cfg):
+def train_sae_supervised_data(sae, activation_store, model, cfg):
+    optimizer = torch.optim.Adam(sae.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
+    wandb_run = init_wandb(cfg)
+    
+    i = 0
+    while activation_store.has_next():
+        activations, _, _ = activation_store.next_batch()
+        sae_output = sae(activations)
+        log_wandb(sae_output, i, wandb_run)
+        if i % cfg["perf_log_freq"]  == 0:
+            batch_tokens, _ = activation_store.get_batch_tokens_and_labels()
+            log_model_performance(wandb_run, i, model, activation_store, sae, batch_tokens=batch_tokens)
+
+
+        loss = sae_output["loss"]
+
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(sae.parameters(), cfg["max_grad_norm"])
+        sae.make_decoder_weights_and_grad_unit_norm()
+        optimizer.step()
+        optimizer.zero_grad()
+        i+=1
+
+    # Save final model state
+    save_checkpoint(wandb_run, sae, cfg, i)
+
+
+def train_sae_unsupervised_data(sae, activation_store, model, cfg):
     num_batches = cfg["num_tokens"] // cfg["batch_size"]
     optimizer = torch.optim.Adam(sae.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
     pbar = range(num_batches)
@@ -64,8 +85,8 @@ def train_sae(sae, activation_store, model, cfg):
         optimizer.step()
         optimizer.zero_grad()
 
-    # Clogs the diretory memory
-    #save_checkpoint(wandb_run, sae, cfg, i)
+    # Save final model state
+    save_checkpoint(wandb_run, sae, cfg, i)
     
 
 def train_sae_group(saes, activation_store, model, cfgs):

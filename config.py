@@ -1,7 +1,7 @@
 import transformer_lens.utils as utils
 import torch 
 
-def get_default_cfg():
+def get_default_sae_cfg():
     default_cfg = {
         "seed": 49,
 
@@ -14,14 +14,15 @@ def get_default_cfg():
         "max_grad_norm": 100000,
         "seq_len": 128,
         "dtype": torch.float32,
+        "model_batch_size": 512,
+        "num_batches_in_buffer": 10,
 
         # Model 
         "model_name": "gpt2-small",
         "site": "resid_pre",
         "layer": 8,
         "act_size": 768,
-        "model_batch_size": 512,
-        "num_batches_in_buffer": 10,
+
 
         # SAE 
         "sae_type": "topk",
@@ -48,14 +49,49 @@ def get_default_cfg():
         "bandwidth": 0.001,
         "l1_coeff": 0,
 
-        # Classification
-        "aggregate_function": "mean",
-        "num_samples_in_batch": 10,
     }
-    default_cfg = post_init_cfg(default_cfg)
+    default_cfg = post_init_sae_cfg(default_cfg)
     return default_cfg
 
-def post_init_cfg(cfg):
+def post_init_sae_cfg(cfg):
+    cfg["dataset_name"] = cfg["dataset_path"].split("/")[-1]
     cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["layer"])
-    cfg["name"] = f"{cfg['model_name']}_{cfg['hook_point']}_{cfg['dict_size']}_{cfg['sae_type']}_{cfg['top_k']}_{cfg['lr']}"
+    cfg["name"] = f"{cfg['model_name']}_{cfg['dataset_name']}_{cfg['dict_size']}_{cfg['sae_type']}_{cfg['top_k']}"
+    return cfg
+
+def get_classifier_cfg(sae_cfg):
+    cfg = {
+        "aggregate_function": "mean",
+        "fine_tune": False,
+        "baseline": False,
+        "input_size": 768,
+        "num_classes": 2,
+        
+        "dataset_path": "fancyzhx/dbpedia_14",
+        "wandb_project": "classifiers",
+        
+        "lr": 1e-4,
+        "beta1": 0.9,
+        "beta2": 0.99,
+        "num_samples_in_batch": 16,
+        "seed": 49,
+        "device": "cuda",
+        "dtype": torch.float32,
+        "layer": 8,
+        "site": "resid_pre",
+        "act_size": sae_cfg["act_size"],
+        "model_name": sae_cfg["model_name"],
+        "sae": sae_cfg["name"],
+        
+
+    }
+    cfg = post_init_classifier_cfg(cfg, sae_cfg)
+    return cfg
+
+def post_init_classifier_cfg(cfg, sae_cfg):
+    cfg["dataset_name"] = cfg["dataset_path"].split("/")[-1]
+    cfg["input_size"] = sae_cfg["act_size"] if cfg["baseline"] else sae_cfg["dict_size"]
+    cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["layer"])
+
+    cfg["name"] = f"classifier_{"baseline" if cfg["baseline"] else "X"}_{"ft" if cfg["fine_tune"] else "X"}_{cfg["aggregate_function"]}_{cfg["num_classes"]}_{cfg["sae"]}"
     return cfg
