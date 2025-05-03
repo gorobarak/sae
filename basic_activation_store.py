@@ -32,6 +32,13 @@ class BasicActivationsStore:
         
         self.current_batch = 0
 
+        self.testset = load_dataset(self.cfg["dataset_path"], split="test")
+        self.testset = self.testset.filter(lambda example: example["label"] == 0 or example['label'] == 2)
+        self.testset = self.testset.shuffle(seed=cfg["seed"])
+        self.testset = self.testset.take(100)
+        self.testset_iter = iter(self.testset)
+
+
 
     def _get_tokens_column(self):
         col_names = self.dataset.column_names
@@ -98,17 +105,35 @@ class BasicActivationsStore:
         
         activations = self.get_activations(batch_tokens)
         
-        aggregate_activations = self._aggregate_activations(activations)
         
-        # Reshape activations to (num_samples_in_batch * max_seq_len_in_batch, act_size)
-        # activations = activations.reshape(-1, self.cfg["act_size"])
-        
-        
-        return  activations, aggregate_activations, labels
+        return  activations, labels
     
     def has_next(self):
         return self.current_batch < self.num_batches_in_dataset
     
 
     def get_testset_activations(self, baseline: bool = False):
-        pass
+        texts = []
+        labels = []
+        
+        while len(texts) < len(self.testset):
+            sample = next(self.testset_iter)
+            text = sample[self._tokens_column]
+            texts.append(text)
+            label = sample["label"] if sample["label"] == 0 else 1
+            labels.append(label)
+        
+        batch_tokens = self.model.to_tokens(texts, truncate=True, move_to_device=True, padding_side='left', prepend_bos=False)
+        labels = torch.tensor(labels, device=self.device)
+
+        with torch.no_grad():
+            _, cache = self.model.run_with_cache(
+                batch_tokens,
+                names_filter=[self.hook_point],
+                stop_at_layer=self.layer + 1,
+            )
+        activations = cache[self.hook_point]
+
+        return activations, labels
+
+

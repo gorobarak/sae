@@ -3,6 +3,13 @@ import tqdm
 from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
 
 
+def aggregate_activations(acts, aggregate_function):
+    if aggregate_function == "mean":
+        return acts.mean(dim=-2)
+    elif aggregate_function == "max":
+        return acts.max(dim=-2).values
+    else:
+        raise ValueError(f"Unknown aggregation function: {aggregate_function}")
 
 def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     optimizer = torch.optim.Adam(classifier.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
@@ -10,20 +17,17 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     criterion = torch.nn.CrossEntropyLoss()
     
     wandb_run = init_wandb(cfg)
-    # testset_acts, testset_labels = activation_store.get_testset_activations()
+    testset_acts, testset_labels = activation_store.get_testset_activations()
     i = 0
     while activation_store.has_next():
-        acts, aggregate_activations, labels = activation_store.next_batch()
+        acts, labels = activation_store.next_batch()
         
-        input_to_classifier = aggregate_activations
+        input_to_classifier = aggregate_activations(acts, cfg["aggregate_function"])
         if not cfg["baseline"]:
             with torch.no_grad():
                 sae_output = pretrained_sae(acts)
             # aggregate along the sequence dimension
-            if cfg["aggregate_function"] == "mean":
-                input_to_classifier = sae_output["feature_acts"].mean(dim=-2)
-            elif cfg["aggregate_function"] == "max":
-                input_to_classifier = sae_output["feature_acts"].max(dim=-2).values
+            input_to_classifier = aggregate_activations(sae_output["feature_acts"], cfg["aggregate_function"])
         
         pred = classifier(input_to_classifier)
 
@@ -33,12 +37,19 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
         optimizer.step()
         optimizer.zero_grad()
 
-        # with torch.no_grad():
-        #     if []
-        #     testset_logits = classifier(testset_acts)
-        #     testset_predictions = torch.argmax(testset_logits, dim=1)
-        #     testset_accuracy = (testset_predictions == testset_labels).float().mean()
-        wandb_run.log({"ce_loss": loss.item(), "accuracy": 0}, i)
+        with torch.no_grad():
+            input_to_classifier = aggregate_activations(testset_acts, cfg["aggregate_function"])
+            
+            if not cfg["baseline"]:
+                sae_output = pretrained_sae(testset_acts)
+                input_to_classifier = aggregate_activations(sae_output["feature_acts"], cfg["aggregate_function"])
+            
+            testset_logits = classifier(input_to_classifier) 
+            testset_predictions = torch.argmax(testset_logits, dim=-1)
+            testset_accuracy = (testset_predictions == testset_labels).float().mean()
+        
+        
+        wandb_run.log({"ce_loss": loss.item(), "accuracy": testset_accuracy}, i)
         i+=1
 
 def train_sae_supervised_data(sae, activation_store, model, cfg):
@@ -47,7 +58,7 @@ def train_sae_supervised_data(sae, activation_store, model, cfg):
     
     i = 0
     while activation_store.has_next():
-        activations, _, _ = activation_store.next_batch()
+        activations, _ = activation_store.next_batch()
         sae_output = sae(activations)
         log_wandb(sae_output, i, wandb_run)
         if i % cfg["perf_log_freq"]  == 0:
