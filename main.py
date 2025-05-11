@@ -115,14 +115,10 @@ if __name__ == "__main__":
     # end{baseline = False}
 
     # begin{baseline = True}
+    # In baseline there is no effect for fintuning as it trained directly on residual stream activations
     classifier_cfg["baseline"] = True
     
     classifier_cfg["fine_tune"] = False
-    classifier_cfg = post_init_classifier_cfg(classifier_cfg, sae_cfg)
-    train_classifier_sae(sae_cfg, classifier_cfg, path_to_pt_sae=path)
-
-
-    classifier_cfg["fine_tune"] = True
     classifier_cfg = post_init_classifier_cfg(classifier_cfg, sae_cfg)
     train_classifier_sae(sae_cfg, classifier_cfg, path_to_pt_sae=path)
     # end{baseline = True}
