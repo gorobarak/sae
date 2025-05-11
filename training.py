@@ -13,7 +13,6 @@ def aggregate_activations(acts, aggregate_function):
 
 def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     optimizer = torch.optim.Adam(classifier.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))
-    # optimizer = torch.optim.SGD(classifier.parameters(), lr=cfg["lr"], momentum=0.9)
     criterion = torch.nn.CrossEntropyLoss()
     
     wandb_run = init_wandb(cfg)

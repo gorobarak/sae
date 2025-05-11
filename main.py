@@ -97,8 +97,8 @@ if __name__ == "__main__":
 
     classifier_cfg = get_classifier_cfg(sae_cfg)
     
-    classifier_cfg["wandb_project"] = "classifiers_v4"
-    classifier_cfg["aggregate_function"] = "mean"
+    classifier_cfg["wandb_project"] = "final_with_accuracy"
+    classifier_cfg["aggregate_function"] = "max"
    
     # begin{basline = False}
     classifier_cfg["basline"] = False    
