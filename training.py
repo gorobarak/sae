@@ -1,7 +1,32 @@
+from sys import activate_stack_trampoline
 import torch
 import tqdm
 from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
+import pandas as pd
 
+
+def create_words_to_latents_table(model, sae):
+    vocab_size = model.cfg.d_vocab
+    dict_size = sae.cfg["dict_size"]
+    topk = sae.cfg["top_k"]
+    table = pd.DataFrame(0, index=range(dict_size), columns=range(vocab_size), dtype=float)
+    for token_id in range(vocab_size):
+        token_id_tensor = torch.tensor([[token_id]], device=sae.cfg["device"])
+        with torch.no_grad():
+            _, cache = model.run_with_cache(
+                token_id_tensor,
+                names_filter=[sae.cfg["hook_point"]],
+                stop_at_layer=sae.cfg["layer"] + 1,
+            )
+            activation = cache[sae.cfg["hook_point"]]
+            sae_output = sae(activation)
+        sae_activation = sae_output["feature_acts"]
+        topk_values, topk_indices = torch.topk(sae_activation, topk, dim=-1)
+        topk_values = topk_values[0,0] # Get out of batch dimension and seq dimension
+        topk_indices = topk_indices[0,0]
+        for latent_id, latent_val in zip(topk_indices, topk_values):
+            table.at[latent_id.item(), token_id] = latent_val.item()
+    return table
 
 def aggregate_activations(acts, aggregate_function):
     if aggregate_function == "mean":
