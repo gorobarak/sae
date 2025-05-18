@@ -54,10 +54,14 @@ def train_classifier_sae(sae_cfg, cfg, path_to_pt_sae=None):
     train_classifier(sae, classifier, activations_store_classifier, cfg)
     
 if __name__ == "__main__":
-    sae_name = "gpt2-small_openwebtext_24576_topk_32_ft_dbpedia_14"
+    sae_name = "gpt2-small_openwebtext_24576_topk_32"
     with open(f"checkpoints/{sae_name}/config.json", "r") as f:
         sae_cfg = json.load(f)
-    sae_cfg["dtype"] = torch.float32
+    if sae_cfg["dtype"] == "torch.float32":
+        sae_cfg["dtype"] = torch.float32
+    else:
+        print(f"Unknown dtype: {sae_cfg['dtype']} defaulting to float32")
+        sae_cfg["dtype"] = torch.float32
     sae = sae_switch(sae_cfg["sae_type"], sae_cfg)
     sae.load_state_dict(torch.load(f"checkpoints/{sae_name}/sae.pt", weights_only=True))
     model = HookedTransformer.from_pretrained(sae_cfg["model_name"]).to(sae_cfg["dtype"]).to(sae_cfg["device"])

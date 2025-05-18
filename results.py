@@ -136,3 +136,116 @@ plt.grid(True)
 # plt.tight_layout()
 plt.show()
 # %%
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+# %%
+sae_name = "gpt2-small_openwebtext_24576_topk_32"
+df = pd.read_csv(f"checkpoints/{sae_name}/words_to_latents.csv")
+df
+# %%
+df.describe()
+# %%
+col0 = df.iloc[:, 0]
+df = df.drop(columns=[col0.name])
+df
+# %%
+import transformer_lens
+import torch
+# %%
+gpt2 = transformer_lens.HookedTransformer.from_pretrained("gpt2-small")
+
+# %%
+columns = df.columns.map(lambda x: torch.tensor([x]))
+columns = columns.map(gpt2.to_str_tokens)
+columns = columns.map(lambda x: x[0] if type(x) is list else x)
+df.columns = columns
+df
+# %%
+df.columns
+# %%
+df
+# %%
+def mean_over_nonzeros(col):
+    non_zeros = col[col != 0]
+    if len(non_zeros) == 0:
+        return 0
+    else:
+        return non_zeros.mean()
+
+# %%
+means = df.apply(mean_over_nonzeros, axis=0)
+
+# %%
+means.plot(kind='bar', figsize=(12, 6))
+plt.xlabel('Token')
+plt.ylabel('Mean Activation')
+# %%
+
+# %%
+# Top 5 activating tokens for each latent
+def top_activating_tokens(row, k=5):
+    top_tokens_vals = row.nlargest(k)
+    top_tokens = top_tokens_vals.index
+    return top_tokens, top_tokens_vals
+# %%
+res = df.apply(top_activating_tokens, axis=1)
+res
+# %%
+res.iloc[8196]
+# %%
+mini_df = df.iloc[:, 0:10]
+# %%
+
+# %%
+# gpt2_tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+
+# %%
+df.columns = range(df.shape[1])
+
+# %%
+res = gpt2_tokenizer.convert_ids_to_tokens([50256])
+res
+# def token_id_to_string_rep(token_id)
+
+
+# %%
+res = mini_df.columns.map(gpt2_tokenizer.convert_ids_to_tokens)
+# %%
+mini_df.columns
+# %%
+res
+# %%
+mini_df.columns = res
+# %%
+mini_df
+
+
+# %%
+def token_id_to_string_rep(token_id):
+    token = gpt2_tokenizer.convert_ids_to_tokens(token_id)
+    if type(token) is list:
+        token = token[0]
+    return token
+# %%
+col0 = df.iloc[:, 0]
+col1000 = df.iloc[:, 1000]
+col50000 = df.iloc[:, 50000]
+nonzero_col0 = col0[col0 != 0]
+nonzero_col1000 = col1000[col1000 != 0]
+nonzero_col50000 = col50000[col50000 != 0]
+print(nonzero_col0.sort_values(ascending=False))
+#%%
+print(nonzero_col1000.sort_values(ascending=False))
+#%%
+print(nonzero_col50000.sort_values(ascending=False))
+# %%
+diff1 = nonzero_col0 - nonzero_col1000
+diff1.dropna()
+
+# %%
+diff2 = nonzero_col0 - nonzero_col50000
+diff2.dropna()
+
+# %%

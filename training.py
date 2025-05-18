@@ -10,11 +10,13 @@ def create_words_to_latents_table(model, sae):
     dict_size = sae.cfg["dict_size"]
     topk = sae.cfg["top_k"]
     table = pd.DataFrame(0, index=range(dict_size), columns=range(vocab_size), dtype=float)
+    prefix = model.to_tokens("The following word is: ", move_to_device=True, prepend_bos=False)
     for token_id in range(vocab_size):
         token_id_tensor = torch.tensor([[token_id]], device=sae.cfg["device"])
+        input_tensor = torch.cat([prefix, token_id_tensor], dim=-1)
         with torch.no_grad():
             _, cache = model.run_with_cache(
-                token_id_tensor,
+                input_tensor,
                 names_filter=[sae.cfg["hook_point"]],
                 stop_at_layer=sae.cfg["layer"] + 1,
             )
@@ -22,10 +24,10 @@ def create_words_to_latents_table(model, sae):
             sae_output = sae(activation)
         sae_activation = sae_output["feature_acts"]
         topk_values, topk_indices = torch.topk(sae_activation, topk, dim=-1)
-        topk_values = topk_values[0,0] # Get out of batch dimension and seq dimension
-        topk_indices = topk_indices[0,0]
+        topk_values = topk_values[0,-1, :] # Get out of batch dimension and seq dimension
+        topk_indices = topk_indices[0,-1, :]
         for latent_id, latent_val in zip(topk_indices, topk_values):
-            table.at[latent_id.item(), token_id] = latent_val.item()
+            table.iat[latent_id.item(), token_id] = latent_val.item()
     return table
 
 def aggregate_activations(acts, aggregate_function):
