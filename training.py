@@ -1,8 +1,75 @@
-from sys import activate_stack_trampoline
+import heapq
+from numpy import half
 import torch
 import tqdm
 from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
 import pandas as pd
+from collections import defaultdict
+
+def create_batch_tokens_and_texts(model, dataset, batch_size=16, duplicate_tokens=False):
+    all_tokens = []
+    all_texts = []
+    half_ctx_size = model.cfg.n_ctx // 2
+    default_token = torch.tensor([[model.tokenizer.bos_token_id]], device=model.cfg.device)
+    for i in range(batch_size):
+        sample = next(dataset)
+        text = sample["text"]
+        tokens = model.to_tokens(text, truncate=True, move_to_device=True, prepend_bos=False)
+        if tokens.shape[-1] > half_ctx_size:
+            tokens = tokens[:, :half_ctx_size]
+        else:
+            while tokens.shape[-1] < half_ctx_size:
+                tokens = torch.cat([tokens, default_token], dim=-1)
+        text = model.tokenizer.decode(tokens[0])
+        if duplicate_tokens:
+            tokens = torch.cat([tokens, tokens], dim=-1)
+        all_texts.append(text)
+        all_tokens.append(tokens)
+    batch_tokens = torch.cat(all_tokens, dim=0)
+    return batch_tokens, all_texts
+
+def get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens, k=10):
+    """
+    Get the top k samples that activate every sae latent
+    """
+
+    heaps = defaultdict(list)
+    num_batches = cfg["num_sequences"] // cfg["batch_size"]
+    for i in range(num_batches):
+        
+        batch_tokens, batch_texts = create_batch_tokens_and_texts(model, dataset, batch_size=cfg["batch_size"], duplicate_tokens=duplicate_tokens)
+        # Get activation
+        with torch.no_grad():
+            _, cache = model.run_with_cache(
+                batch_tokens,
+                names_filter=[cfg["hook_point"]],
+                stop_at_layer=cfg["hook_point_layer"] + 1,
+            )
+            activations = cache[cfg["hook_point"]]
+            
+            if duplicate_tokens:
+                # Discard the first copy's activations
+                half_ctx_size = model.cfg.n_ctx // 2
+                activations = activations[:, half_ctx_size: ,:]
+
+            # Get latent activations
+            latents_acts = sae.encode(activations)
+            
+        # Aggregate latent activation along the sequence dimension
+        latents_acts_agg = latents_acts.max(dim=-2).values
+
+        # Update the top k samples for each latent 
+        for batch_idx in range(cfg['batch_size']):
+            for latent_idx in range(cfg['d_sae']):
+                
+                latent_activation = latents_acts_agg[batch_idx, latent_idx].item()
+                item = (latent_activation, i, batch_texts[batch_idx]) # i is used for tie breaking
+            
+                if i < k:
+                    heapq.heappush(heaps[latent_idx], item)
+                else:
+                    heapq.heappushpop(heaps[latent_idx], item)
+    return heaps
 
 
 def create_words_to_latents_table(model, sae):

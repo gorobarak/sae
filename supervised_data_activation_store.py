@@ -1,12 +1,9 @@
-from networkx import selfloop_edges
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from transformer_lens.hook_points import HookedRootModule
 from datasets import Dataset, load_dataset
-import tqdm
-import pdb
 
-class BasicActivationsStore:
+class SupervisedDataActivationsStore:
     def __init__(
         self,
         model: HookedRootModule,
@@ -84,19 +81,6 @@ class BasicActivationsStore:
                 stop_at_layer=self.layer + 1,
             )
         return cache[self.hook_point]
-
-    """
-    Aggregating along the sequence dimension
-    Output shape is (num_samples_in_batch, act_size)
-    """
-    def _aggregate_activations(self, activations: torch.Tensor):
-        if self.cfg["aggregate_function"] == "mean":
-            return activations.mean(dim=-2)
-        elif self.cfg["aggregate_function"] == "max":
-            return activations.max(dim=-2).values
-        else:
-            raise ValueError(f"Unknown aggregate function: {self.cfg['aggregate_function']}")
-
 
 
 

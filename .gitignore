@@ -9,3 +9,6 @@ playground.py
 slurm.slurm
 butterfly_comperasion.err
 butterfly_comperasion.out
+slurm.err
+slurm.out
+topk_samples.json
