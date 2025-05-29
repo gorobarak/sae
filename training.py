@@ -17,8 +17,6 @@ def generate_descriptions(topk_samples_dict_path, explainer_model="gpt-4o-mini")
     for k, topk_samples in topk_samples_dict.items():
         description = query_explainer_model(topk_samples, model=explainer_model)
         descriptions[k] = description
-        if k == "3":
-            break
     
     return descriptions
 def create_batch_tokens_and_texts(model, dataset, ctx_size=128, batch_size=16, duplicate_tokens=False):
