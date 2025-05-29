@@ -62,13 +62,14 @@ if __name__ == "__main__":
     sae, cfg, _ = SAE.from_pretrained(release, sae_id, device="cuda")
     cfg['device'] = 'cuda'
     cfg['dtype'] = torch.float32
-    cfg['num_sequences'] = int(1e6)
-    cfg["batch_size"] = 32
+    cfg['num_sequences'] = int(1e5)
+    cfg["batch_size"] = 256
+    cfg['ctx_size'] = 128
     
     model = HookedTransformer.from_pretrained(cfg["model_name"]).to(cfg["dtype"]).to(cfg["device"])
 
     dataset = iter(load_dataset(cfg["dataset_path"], split="train", streaming=True))
     
-    topks = get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens=False, k=10)
-    with open("topk_samples.json", "w") as f:
+    topks = get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens=True, k=10)
+    with open("topk_samples_duplicate.json", "w") as f:
         json.dump(topks, f, indent=4)

@@ -12,3 +12,4 @@ butterfly_comperasion.out
 slurm.err
 slurm.out
 topk_samples.json
+openai_key.txt

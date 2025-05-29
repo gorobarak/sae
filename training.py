@@ -1,24 +1,38 @@
 import heapq
-from numpy import half
 import torch
 import tqdm
 from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
 import pandas as pd
 from collections import defaultdict
+from query_gpt import query_explainer_model
+import json
 
-def create_batch_tokens_and_texts(model, dataset, batch_size=16, duplicate_tokens=False):
+
+
+def generate_descriptions(topk_samples_dict_path, explainer_model="gpt-4o-mini"):
+    descriptions = {}
+    with open(topk_samples_dict_path, "r") as f:
+        topk_samples_dict = json.load(f)
+        
+    for k, topk_samples in topk_samples_dict.items():
+        description = query_explainer_model(topk_samples, model=explainer_model)
+        descriptions[k] = description
+        if k == "3":
+            break
+    
+    return descriptions
+def create_batch_tokens_and_texts(model, dataset, ctx_size=128, batch_size=16, duplicate_tokens=False):
     all_tokens = []
     all_texts = []
-    half_ctx_size = model.cfg.n_ctx // 2
     default_token = torch.tensor([[model.tokenizer.bos_token_id]], device=model.cfg.device)
     for i in range(batch_size):
         sample = next(dataset)
         text = sample["text"]
         tokens = model.to_tokens(text, truncate=True, move_to_device=True, prepend_bos=False)
-        if tokens.shape[-1] > half_ctx_size:
-            tokens = tokens[:, :half_ctx_size]
+        if tokens.shape[-1] > ctx_size:
+            tokens = tokens[:, :ctx_size]
         else:
-            while tokens.shape[-1] < half_ctx_size:
+            while tokens.shape[-1] < ctx_size:
                 tokens = torch.cat([tokens, default_token], dim=-1)
         text = model.tokenizer.decode(tokens[0])
         if duplicate_tokens:
@@ -28,16 +42,17 @@ def create_batch_tokens_and_texts(model, dataset, batch_size=16, duplicate_token
     batch_tokens = torch.cat(all_tokens, dim=0)
     return batch_tokens, all_texts
 
-def get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens, k=10):
+def get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens=False, k=10):
     """
     Get the top k samples that activate every sae latent
     """
 
     heaps = defaultdict(list)
     num_batches = cfg["num_sequences"] // cfg["batch_size"]
+    ctx_size = cfg["ctx_size"]
     for i in range(num_batches):
         
-        batch_tokens, batch_texts = create_batch_tokens_and_texts(model, dataset, batch_size=cfg["batch_size"], duplicate_tokens=duplicate_tokens)
+        batch_tokens, batch_texts = create_batch_tokens_and_texts(model, dataset, ctx_size=ctx_size, batch_size=cfg["batch_size"], duplicate_tokens=duplicate_tokens)
         # Get activation
         with torch.no_grad():
             _, cache = model.run_with_cache(
@@ -49,8 +64,7 @@ def get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens, k=10)
             
             if duplicate_tokens:
                 # Discard the first copy's activations
-                half_ctx_size = model.cfg.n_ctx // 2
-                activations = activations[:, half_ctx_size: ,:]
+                activations = activations[:, ctx_size: ,:]
 
             # Get latent activations
             latents_acts = sae.encode(activations)
