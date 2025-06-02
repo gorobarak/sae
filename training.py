@@ -1,24 +1,29 @@
 import heapq
 import torch
 import tqdm
-from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint
+from logs import init_wandb, log_wandb, log_model_performance, save_checkpoint, save_checkpoint_topk
 import pandas as pd
 from collections import defaultdict
 from query_gpt import query_explainer_model
-import json
+import pickle
+import os
 
 
 
 def generate_descriptions(topk_samples_dict_path, explainer_model="gpt-4o-mini"):
     descriptions = {}
-    with open(topk_samples_dict_path, "r") as f:
-        topk_samples_dict = json.load(f)
+    with open(topk_samples_dict_path, "rb") as f:
+        topk_samples_dict = pickle.load(f)
         
     for k, topk_samples in topk_samples_dict.items():
         description = query_explainer_model(topk_samples, model=explainer_model)
         descriptions[k] = description
     
-    return descriptions
+    save_dir = os.path.dirname(topk_samples_dict_path)
+    file_path = os.path.join(save_dir, "descriptions.pkl")
+    with open(file_path, "wb") as f:
+        pickle.dump(descriptions, f)
+
 def create_batch_tokens_and_texts(model, dataset, ctx_size=128, batch_size=16, duplicate_tokens=False):
     all_tokens = []
     all_texts = []
@@ -77,11 +82,14 @@ def get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens=False,
                 latent_activation = latents_acts_agg[batch_idx, latent_idx].item()
                 item = (latent_activation, i, batch_texts[batch_idx]) # i is used for tie breaking
             
-                if i < k:
+                if len(heaps[latent_idx]) < k:
                     heapq.heappush(heaps[latent_idx], item)
                 else:
                     heapq.heappushpop(heaps[latent_idx], item)
-    return heaps
+        if i % 50 == 0:
+            save_checkpoint_topk(heaps, duplicate_tokens, i)
+
+    save_checkpoint_topk(heaps, duplicate_tokens, i)
 
 
 def create_words_to_latents_table(model, sae):

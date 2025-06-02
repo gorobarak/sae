@@ -3,6 +3,7 @@ import torch
 from functools import partial
 import os
 import json
+import pickle
 
 def init_wandb(cfg):
     return wandb.init(project=cfg["wandb_project"], name=cfg["name"], config=cfg, reinit=True)
@@ -103,3 +104,11 @@ def save_checkpoint(wandb_run, sae, cfg, step):
 
     print(f"Model and config saved as artifact at step {step}")
 
+
+def save_checkpoint_topk(heaps, duplicate_tokens, i):
+    dir_name = f"topk_samples_{'duplicate' if duplicate_tokens else 'base'}"
+    save_dir = os.path.join("checkpoints", dir_name)
+    os.makedirs(save_dir, exist_ok=True)
+    file_path = os.path.join(save_dir, f"heaps_{i}.pkl")
+    with open(file_path, "wb") as f:
+        pickle.dump(heaps, f)
