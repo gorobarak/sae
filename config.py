@@ -6,22 +6,25 @@ def get_default_sae_cfg():
         "seed": 49,
 
         # Training 
-        "batch_size": 4096,
+        "batch_size": 10,
         "num_tokens": int(1e9),
         "lr": 3e-4,
         "beta1": 0.9,
         "beta2": 0.99,
         "max_grad_norm": 100000,
-        "seq_len": 128,
         "dtype": torch.float32,
-        "model_batch_size": 512,
-        "num_batches_in_buffer": 10,
+        
+        
 
         # Model 
         "model_name": "gpt2-small",
         "site": "resid_pre",
-        "layer": 8,
+        "hook_point_layer": 8,
         "act_size": 768,
+        "context_size" : 128,
+        "model_batch_size": 512,
+        "num_batches_in_buffer": 10,
+
 
 
         # SAE 
@@ -55,11 +58,11 @@ def get_default_sae_cfg():
 
 def post_init_sae_cfg(cfg):
     cfg["dataset_name"] = cfg["dataset_path"].split("/")[-1]
-    cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["layer"])
+    cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["hook_point_layer"])
     cfg["name"] = f"{cfg['model_name']}_{cfg['dataset_name']}_{cfg['dict_size']}_{cfg['sae_type']}_{cfg['top_k']}"
     return cfg
 
-def get_classifier_cfg(sae_cfg):
+def get_default_classifier_cfg(sae_cfg):
     cfg = {
         "aggregate_function": "mean",
         "fine_tune": False,
@@ -74,10 +77,12 @@ def get_classifier_cfg(sae_cfg):
         "beta1": 0.9,
         "beta2": 0.99,
         "num_samples_in_batch": 16,
+        "num_samples_in_testset": 100,
+        "filter_labels": [0, 2],
         "seed": 49,
         "device": "cuda",
         "dtype": torch.float32,
-        "layer": 8,
+        "hook_point_layer": 8,
         "site": "resid_pre",
         "act_size": sae_cfg["act_size"],
         "model_name": sae_cfg["model_name"],
@@ -91,7 +96,7 @@ def get_classifier_cfg(sae_cfg):
 def post_init_classifier_cfg(cfg, sae_cfg):
     cfg["dataset_name"] = cfg["dataset_path"].split("/")[-1]
     cfg["input_size"] = sae_cfg["act_size"] if cfg["baseline"] else sae_cfg["dict_size"]
-    cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["layer"])
+    cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["hook_point_layer"])
 
     cfg["name"] = f"classifier_{"baseline" if cfg["baseline"] else "X"}_{"ft" if cfg["fine_tune"] else "X"}_{cfg["aggregate_function"]}_{cfg["num_classes"]}_{cfg["sae"]}"
     return cfg

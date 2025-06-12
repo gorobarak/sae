@@ -1,6 +1,6 @@
 #%%
 from classifier import LinearClassifier
-from training import generate_descriptions, train_classifier, train_sae_supervised_data, train_sae_unsupervised_data, create_words_to_latents_table, get_top_activating_samples
+from training import *
 from sae import VanillaSAE, TopKSAE, BatchTopKSAE, JumpReLUSAE
 from activation_store import ActivationsStore
 from config import get_default_sae_cfg, post_init_sae_cfg, get_classifier_cfg, post_init_classifier_cfg
@@ -8,8 +8,7 @@ from transformer_lens import HookedTransformer
 import torch
 import json
 from sae_lens import SAE
-from simple_activation_store import SimpleActivationStore
-from supervised_data_activation_store import SupervisedDataActivationsStore
+from my_activation_store import UnsupervisedActivationStore, SupervisedActivationsStore
 from datasets import load_dataset
 
 
@@ -57,16 +56,18 @@ def train_classifier_sae(sae_cfg, cfg, path_to_pt_sae=None):
     train_classifier(sae, classifier, activations_store_classifier, cfg)
     
 if __name__ == "__main__":
-    # release = "gpt2-small-res-jb"
-    # sae_id = "blocks.8.hook_resid_pre"
-    # sae, cfg, _ = SAE.from_pretrained(release, sae_id, device="cuda")
-    # cfg['device'] = 'cuda'
-    # cfg['dtype'] = torch.float32
-    # cfg['num_sequences'] = int(1e5)
-    # cfg["batch_size"] = 256
-    # cfg['ctx_size'] = 128
+    release = "gpt2-small-res-jb"
+    sae_id = "blocks.8.hook_resid_pre"
+    sae, cfg, _ = SAE.from_pretrained(release, sae_id, device="cuda")
+    cfg['device'] = 'cuda'
+    cfg['dtype'] = torch.float32
+    cfg['num_sequences'] = int(1e5)
+    cfg["batch_size"] = 256
+    cfg['ctx_size'] = 128
     
     # model = HookedTransformer.from_pretrained(cfg["model_name"]).to(cfg["dtype"]).to(cfg["device"])
+
+    # print(model.to_tokens("Hello, world!"))
 
     # dataset = iter(load_dataset(cfg["dataset_path"], split="train", streaming=True))
     

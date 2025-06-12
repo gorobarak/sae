@@ -193,3 +193,15 @@ compare_descriptions(13563, "negative descriptors related to unfortunate or dist
 # %%
 compare_topk_samples(13563)
 # %%
+topk_sample_duplicate_6822 = standerdize(topk_dict_duplicate[6822])
+for sample in topk_sample_duplicate_6822:
+    print("posh" in sample[1])
+# %%
+topk_sample_6822 = standerdize(topk_dict_base[6822])
+for sample in topk_sample_duplicate_6822:
+    print("posh" in sample[1])
+# %%
+texts_base = [sample[1] for sample in topk_sample_6822]
+texts_duplicate = [sample[1] for sample in topk_sample_duplicate_6822]
+len (set(texts_base) & set(texts_duplicate))
+# %%
