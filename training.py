@@ -130,20 +130,19 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     criterion = torch.nn.CrossEntropyLoss()
     
     wandb_run = init_wandb(cfg)
-    testset_acts, testset_labels = activation_store.get_testset_activations()
+    testset_acts, testset_labels, _ = activation_store.get_testset_activations()
     i = 0
     while activation_store.has_next():
-        acts, labels = activation_store.next_batch()
+        acts, labels, _ = activation_store.next_batch()
         
-        input_to_classifier = aggregate_activations(acts, cfg["aggregate_function"])
-        if not cfg["baseline"]:
+        if cfg["baseline"]:
+            input_to_classifier = aggregate_activations(acts, cfg["aggregate_function"])
+        else:
             with torch.no_grad():
                 sae_output = pretrained_sae(acts)
-            # aggregate along the sequence dimension
             input_to_classifier = aggregate_activations(sae_output["feature_acts"], cfg["aggregate_function"])
         
         pred = classifier(input_to_classifier)
-
         loss = criterion(pred, labels)
         
         loss.backward()
@@ -151,9 +150,9 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
         optimizer.zero_grad()
 
         with torch.no_grad():
-            input_to_classifier = aggregate_activations(testset_acts, cfg["aggregate_function"])
-            
-            if not cfg["baseline"]:
+            if cfg["baseline"]:
+                input_to_classifier = aggregate_activations(testset_acts, cfg["aggregate_function"])
+            else:
                 sae_output = pretrained_sae(testset_acts)
                 input_to_classifier = aggregate_activations(sae_output["feature_acts"], cfg["aggregate_function"])
             
@@ -171,7 +170,7 @@ def train_sae_supervised_data(sae, activation_store, model, cfg):
     
     i = 0
     while activation_store.has_next():
-        activations, _ = activation_store.next_batch()
+        activations, _, _= activation_store.next_batch()
         sae_output = sae(activations)
         log_wandb(sae_output, i, wandb_run)
         if i % cfg["perf_log_freq"]  == 0:

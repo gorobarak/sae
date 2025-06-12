@@ -29,7 +29,7 @@ def get_default_sae_cfg():
 
         # SAE 
         "sae_type": "topk",
-        "dict_size": 12288,
+        "dict_size": 768*32,
         "device": "cuda",
         "input_unit_norm": True,
         "n_batches_to_dead": 5,
@@ -67,7 +67,6 @@ def get_default_classifier_cfg(sae_cfg):
         "aggregate_function": "mean",
         "fine_tune": False,
         "baseline": False,
-        "input_size": 768,
         "num_classes": 2,
         
         "dataset_path": "fancyzhx/dbpedia_14",
