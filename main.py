@@ -1,15 +1,17 @@
-#%%
+from matplotlib.pyplot import cla
 from classifier import LinearClassifier
 from training import *
 from sae import VanillaSAE, TopKSAE, BatchTopKSAE, JumpReLUSAE
 from activation_store import ActivationsStore
-from config import get_default_sae_cfg, post_init_sae_cfg, get_classifier_cfg, post_init_classifier_cfg
+from config import get_default_sae_cfg, post_init_sae_cfg, get_default_classifier_cfg, post_init_classifier_cfg
 from transformer_lens import HookedTransformer
 import torch
 import json
 from sae_lens import SAE
 from my_activation_store import UnsupervisedActivationStore, SupervisedActivationsStore
 from datasets import load_dataset
+import requests
+import os
 
 
 
@@ -54,22 +56,54 @@ def train_classifier_sae(sae_cfg, cfg, path_to_pt_sae=None):
     classifier = LinearClassifier(cfg["input_size"], cfg["num_classes"]).to(cfg["dtype"]).to(cfg["device"])
 
     train_classifier(sae, classifier, activations_store_classifier, cfg)
-    
+
+
+def print_and_write(message, lines):
+    print(message)
+    lines.append("\n" + message)
+
 if __name__ == "__main__":
     release = "gpt2-small-res-jb"
-    sae_id = "blocks.8.hook_resid_pre"
-    sae, cfg, _ = SAE.from_pretrained(release, sae_id, device="cuda")
-    cfg['device'] = 'cuda'
-    cfg['dtype'] = torch.float32
-    cfg['num_sequences'] = int(1e5)
-    cfg["batch_size"] = 256
-    cfg['ctx_size'] = 128
-    
-    # model = HookedTransformer.from_pretrained(cfg["model_name"]).to(cfg["dtype"]).to(cfg["device"])
+    sae_id = "blocks.9.hook_resid_pre"
+    sae, sae_cfg, _ = SAE.from_pretrained(release, sae_id, device="cuda")
 
-    # print(model.to_tokens("Hello, world!"))
+    for class_idx in range(14):
+        dir_path = f"checkpoints/dbpedia_class_{class_idx}_gpt2-small_blocks.8.hook_resid_post"
+        
+        # load activatoins
+        with open(os.path.join(dir_path, "activations.pkl"), "rb") as f:
+            activations = torch.load(f).to('cuda') # [batch, seq, d_model]
 
-    # dataset = iter(load_dataset(cfg["dataset_path"], split="train", streaming=True))
-    
-    # get_top_activating_samples(model, sae, cfg, dataset, duplicate_tokens=False, k=10)
-    generate_descriptions("checkpoints/topk_samples_duplicate/heaps_390.pkl", explainer_model="gpt-4o-mini")
+        # aggregate activations along sequence and batch dimensions
+        agg_activation = activations.mean(dim=(0, 1)) # [d_model]
+        
+        # get dictionary activation
+        with torch.no_grad():
+            dict_activations = sae.encode(agg_activation.unsqueeze(0)).squeeze(0) # [d_sae]
+        
+        # get top-k features
+        dict_topk = torch.topk(dict_activations, k=15, sorted=True)
+
+        # get descriptions for top-k features
+        model_id = "gpt2-small"
+        layer = "9-res-jb"
+        lines = []
+        print_and_write(f"Top features for class {class_idx}", lines)
+        for feature_idx, act_val in zip(dict_topk.indices, dict_topk.values):
+            if act_val == 0.0:
+                break
+            r = requests.get(
+            f"https://www.neuronpedia.org/api/feature/{model_id}/{layer}/{feature_idx}"
+            )
+            if r.status_code == 200:
+                body = r.json()
+                for explanation in body["explanations"]:
+                    print_and_write(f"Feature {feature_idx}", lines)
+                    print_and_write(f"{act_val.item()} -- {explanation['description']}", lines)
+                    print_and_write("---------------", lines)
+            else:
+                print_and_write(f"Failed to fetch explanations: {r.status_code} - {r.reason}", lines)
+        
+        # write to file
+        with open(os.path.join(dir_path, "top_features.txt"), "w") as f:
+            f.writelines(lines)

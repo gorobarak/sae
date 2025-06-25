@@ -130,17 +130,19 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
     criterion = torch.nn.CrossEntropyLoss()
     
     wandb_run = init_wandb(cfg)
-    testset_acts, testset_labels, _ = activation_store.get_testset_activations()
     i = 0
+    running_loss = 0.0
+    
     while activation_store.has_next():
+        
         acts, labels, _ = activation_store.next_batch()
         
         if cfg["baseline"]:
             input_to_classifier = aggregate_activations(acts, cfg["aggregate_function"])
         else:
             with torch.no_grad():
-                sae_output = pretrained_sae(acts)
-            input_to_classifier = aggregate_activations(sae_output["feature_acts"], cfg["aggregate_function"])
+                sae_output = pretrained_sae.encode(acts)
+            input_to_classifier = aggregate_activations(sae_output, cfg["aggregate_function"])
         
         pred = classifier(input_to_classifier)
         loss = criterion(pred, labels)
@@ -149,20 +151,35 @@ def train_classifier(pretrained_sae, classifier, activation_store, cfg):
         optimizer.step()
         optimizer.zero_grad()
 
-        with torch.no_grad():
-            if cfg["baseline"]:
-                input_to_classifier = aggregate_activations(testset_acts, cfg["aggregate_function"])
-            else:
-                sae_output = pretrained_sae(testset_acts)
-                input_to_classifier = aggregate_activations(sae_output["feature_acts"], cfg["aggregate_function"])
+        if i % cfg["log_acc_freq"] == 0:
             
-            testset_logits = classifier(input_to_classifier) 
-            testset_predictions = torch.argmax(testset_logits, dim=-1)
-            testset_accuracy = (testset_predictions == testset_labels).float().mean()
+            with torch.no_grad():
+                correct = 0
+                total = 0
+                
+                while activation_store.has_next_testset():
+                    
+                    testset_acts, testset_labels, _ = activation_store.next_testset_batch()
+
+                    if cfg["baseline"]:
+                        input_to_classifier = aggregate_activations(testset_acts, cfg["aggregate_function"])
+                    else:
+                        sae_output = pretrained_sae.encode(testset_acts)
+                        input_to_classifier = aggregate_activations(sae_output, cfg["aggregate_function"])
+                    
+                    testset_logits = classifier(input_to_classifier) 
+                    testset_predictions = torch.argmax(testset_logits, dim=-1)
+                    correct += (testset_predictions == testset_labels).sum().item()
+                    total += testset_labels.shape[0]
+                
+                activation_store.reset_testset_iter()
+                testset_accuracy = correct / total
+                wandb_run.log({"testset_accuracy": testset_accuracy}, i)
         
-        
-        wandb_run.log({"ce_loss": loss.item(), "accuracy": testset_accuracy}, i)
         i+=1
+        running_loss += loss.item()
+        wandb_run.log({"ce_loss": (running_loss / i)}, i)
+        
 
 def train_sae_supervised_data(sae, activation_store, model, cfg):
     optimizer = torch.optim.Adam(sae.parameters(), lr=cfg["lr"], betas=(cfg["beta1"], cfg["beta2"]))

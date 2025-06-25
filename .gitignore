@@ -13,3 +13,4 @@ slurm.err
 slurm.out
 topk_samples.json
 openai_key.txt
+neuropedia_token.txt

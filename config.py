@@ -67,25 +67,26 @@ def get_default_classifier_cfg(sae_cfg):
         "aggregate_function": "mean",
         "fine_tune": False,
         "baseline": False,
-        "num_classes": 2,
+        "reactivation": False,
+        "num_classes": 14,
         
         "dataset_path": "fancyzhx/dbpedia_14",
         "wandb_project": "classifiers",
         
-        "lr": 1e-4,
+        "lr": 5e-5,
         "beta1": 0.9,
         "beta2": 0.99,
-        "num_samples_in_batch": 16,
-        "num_samples_in_testset": 100,
+        "num_samples_in_batch": 512,
         "filter_labels": [0, 2],
         "seed": 49,
         "device": "cuda",
         "dtype": torch.float32,
-        "hook_point_layer": 8,
-        "site": "resid_pre",
-        "act_size": sae_cfg["act_size"],
+        "hook_point_layer": sae_cfg["hook_point_layer"],
+        "hook_point": sae_cfg["hook_point"],
+        "act_size": sae_cfg["d_in"],
         "model_name": sae_cfg["model_name"],
-        "sae": sae_cfg["name"],
+        "sae": sae_cfg["neuronpedia_id"],
+        "log_acc_freq" : 100,
         
 
     }
@@ -94,8 +95,7 @@ def get_default_classifier_cfg(sae_cfg):
 
 def post_init_classifier_cfg(cfg, sae_cfg):
     cfg["dataset_name"] = cfg["dataset_path"].split("/")[-1]
-    cfg["input_size"] = sae_cfg["act_size"] if cfg["baseline"] else sae_cfg["dict_size"]
-    cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["hook_point_layer"])
-
-    cfg["name"] = f"classifier_{"baseline" if cfg["baseline"] else "X"}_{"ft" if cfg["fine_tune"] else "X"}_{cfg["aggregate_function"]}_{cfg["num_classes"]}_{cfg["sae"]}"
+    cfg["input_size"] = sae_cfg["d_in"] if cfg["baseline"] else sae_cfg["d_sae"]
+    # cfg["hook_point"] = utils.get_act_name(cfg["site"], cfg["hook_point_layer"])
+    cfg["name"] = f"classifier_{"reactivation" if cfg["reactivation"] else "X"}_{cfg["aggregate_function"]}_{cfg["num_classes"]}_{cfg["sae"]}"
     return cfg

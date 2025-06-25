@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader, Dataset
 from transformer_lens.hook_points import HookedRootModule
 from datasets import load_dataset
 
@@ -26,16 +27,18 @@ class SupervisedActivationsStore:
         self.testset_iter = iter(self.testset)
 
         self.num_samples_in_batch = cfg['num_samples_in_batch']
-        self.num_batches_in_dataset = len(self.dataset) // cfg["num_samples_in_batch"]
+        
+        self.num_batches_in_dataset = len(self.dataset) // self.num_samples_in_batch
+        self.num_batchs = 0
+        
+        self.num_batches_in_testset = len(self.testset) // self.num_samples_in_batch
+        self.testset_batch_num = 0
         
         self.hook_point = cfg["hook_point"]
         self.device = cfg["device"]
         
         self._tokens_column = self._get_tokens_column()
         
-        self.num_batchs = 0
-
-
 
     def filter_labels(self):
         def filter_func(sample):
@@ -73,6 +76,10 @@ class SupervisedActivationsStore:
         
         self.num_batchs += 1
         batch_tokens = self.model.to_tokens(texts, truncate=True, move_to_device=True, padding_side='left', prepend_bos=False)
+        B, S = batch_tokens.shape
+        batch_tokens = batch_tokens[:, :S//2]
+        if self.cfg['reactivation']:
+            batch_tokens = torch.cat([batch_tokens, batch_tokens], dim=-1)
         batch_labels = torch.tensor(labels, device=self.device, dtype=torch.long)
         return batch_tokens, batch_labels
 
@@ -93,17 +100,20 @@ class SupervisedActivationsStore:
     def next_batch(self):
         batch_tokens, batch_labels = self.get_batch_tokens_and_labels()
         activations = self.get_activations(batch_tokens)
+        if self.cfg['reactivation']:
+            B, S, C = activations.shape
+            activations = activations[:, S//2:, :]
         return activations, batch_labels, batch_tokens
     
     def has_next(self):
         return self.num_batchs < self.num_batches_in_dataset
     
 
-    def get_testset_activations(self):
+    def next_testset_batch(self):
         texts = []
         labels = []
         
-        while len(texts) < self.cfg['num_samples_in_testset']:
+        while len(texts) < self.cfg['num_samples_in_batch']:
             sample = next(self.testset_iter)
             text = sample[self._tokens_column]
             texts.append(text)
@@ -111,6 +121,10 @@ class SupervisedActivationsStore:
             labels.append(label)
         
         batch_tokens = self.model.to_tokens(texts, truncate=True, move_to_device=True, padding_side='left', prepend_bos=False)
+        B, S = batch_tokens.shape
+        batch_tokens = batch_tokens[:, :S//2]
+        if self.cfg['reactivation']:
+            batch_tokens = torch.cat([batch_tokens, batch_tokens], dim=-1)
         batch_labels = torch.tensor(labels, device=self.device, dtype=torch.long)
 
         with torch.no_grad():
@@ -120,10 +134,21 @@ class SupervisedActivationsStore:
                 stop_at_layer=self.cfg['hook_point_layer'] + 1,
             )
         activations = cache[self.hook_point]
+        if self.cfg['reactivation']:
+            B, S, C = activations.shape
+            activations = activations[:, S//2:, :]
+
+        self.testset_batch_num += 1
 
         return activations, batch_labels, batch_tokens
 
+    def has_next_testset(self):
+        return self.testset_batch_num < self.num_batches_in_testset
 
+    def reset_testset_iter(self):
+        self.testset_iter = iter(self.testset)
+        self.testset_batch_num = 0
+    
 class UnsupervisedActivationStore:
     def __init__(
             self,
@@ -180,3 +205,7 @@ class UnsupervisedActivationStore:
         batch_tokens = self.get_batch_tokens()
         batch_acts = self.get_activations(batch_tokens)
         return batch_tokens, batch_acts
+    
+class dbpedia_14_dataset(Dataset):
+    def __init__(self, cfg, model):
+        self.cfg = cfg
