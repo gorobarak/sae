@@ -19,7 +19,7 @@ hook_point = "blocks.24.hook_resid_post"
 hook_layer = 24 
 prepend_bos = True
 pad_token_idx = model.tokenizer.pad_token_id 
-reactivations = True
+reactivations = False
 
 
 NUM_SAMPELS_IN_CLASS = 40000
@@ -32,7 +32,8 @@ for j in range(7):
     
     
     for i in range(offset, offset + NUM_SAMPELS_IN_CLASS, batch_size):
-        batch = dataset[i: i + batch_size]
+        interval_end = min(i + batch_size, offset + NUM_SAMPELS_IN_CLASS)
+        batch = dataset[i: interval_end]
         tokens = model.to_tokens(batch['content'], truncate=True, move_to_device=True, prepend_bos=prepend_bos)
         tokens = tokens[:, :seq_len] # [batch, seq_len]
         if tokens.shape[-1] < seq_len:
