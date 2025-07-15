@@ -4,11 +4,11 @@ import sys
 import requests 
 import pdb
 
-with open("openai_key.txt", "r") as f:
+with open("openai_key_personal.txt", "r") as f:
     openai_key = f.read().strip()
 os.environ["OPENAI_API_KEY"] = openai_key
 
-def query_gpt(prompt, model="gpt-4o-mini"):
+def query_gpt(prompt, model="gpt-4.1-nano"):
     client = openai.OpenAI()
 
     response = client.responses.create(
@@ -77,15 +77,15 @@ def standerdize(topk_samples):
     return [(sample[0], sample[2]) for sample in topk_samples]
 
 
-def build_descriminate_task_prompt(real_text, decoy_text1, decoy_text2, top10_real, real_idx, hook_point):
+def build_descriminate_task_prompt(real_text, decoy_texts, top10_real, real_idx, hook_point):
     """
     Builds a prompt for the descriminate task.
     """
     layer = hook_point.split(".")[1]  
     descriptions = []
     act_vals = top10_real.values
-    model_id = "gpt2-small"
-    release_and_layer = layer+"-res-jb" 
+    model_id = "gemma-2-2b"
+    release_and_layer = f"{layer}-gemmascope-res-16k" 
     for feature_idx in top10_real.indices:
         r = requests.get(
             f"https://www.neuronpedia.org/api/feature/{model_id}/{release_and_layer}/{feature_idx}"
@@ -97,10 +97,10 @@ def build_descriminate_task_prompt(real_text, decoy_text1, decoy_text2, top10_re
         else:
             print(f"Failed to fetch explanations: {r.status_code} - {r.reason}", file=sys.stderr)
 
-
+    num_of_texts = len(decoy_texts) + 1
 
     prompt = f"""
-Your task is to determine which of the three provided texts most accurately corresponds to the given set of text features, derived from activations of a Sparse Autoencoder (SAE). The features listed below are sorted in descending order by activation value, representing their strength and relevance to the original text.
+Your task is to determine which of the {num_of_texts} provided texts most accurately corresponds to the given set of text features, derived from a Sparse Autoencoder (SAE). The features listed below are sorted in descending order by activation value, representing their strength and relevance to the original text.
 
 The features list sorted by activation value:
 
@@ -117,22 +117,23 @@ The features list sorted by activation value:
 
 The texts:
 
-{build_texts_order(real_text, decoy_text1, decoy_text2, real_idx)}
+{build_texts_order(real_text, decoy_texts, real_idx)}
 
-Based solely on the listed features, identify which of these texts, when decomposed by the SAE, would produce the given feature activations. Respond with the number of the text that best matches these features. Provide no explanations, prefixes, or additional context—your response should consist of only a single number (1, 2, or 3).
+Based solely on the listed features, identify which of these texts, when decomposed by the SAE, would produce the given feature activations. Respond with the number of the text that best matches these features. Provide no explanations, prefixes, or additional context—your response should consist of only a single number.
     """
     return prompt
 
-def build_texts_order(real_text, decoy_text1, decoy_text2, real_idx):
+def build_texts_order(real_text, decoy_texts, real_idx):
     """
     Builds the texts in the order specified by real_idx.
     """
-    if real_idx == 1:
-        return f"1. {real_text}\n2. {decoy_text1}\n3. {decoy_text2}"
-    elif real_idx == 2:
-        return f"1. {decoy_text1}\n2. {real_text}\n3. {decoy_text2}"
-    elif real_idx == 3:
-        return f"1. {decoy_text2}\n2. {decoy_text1}\n3. {real_text}"
-    else:
-        print(f"Error: real_idx should be 1, 2, or 3, but got {real_idx}", file=sys.stderr)
-        sys.exit(1)
+    length = len(decoy_texts) + 1
+    prompt_parts = []
+    iter_decoy_texts = iter(decoy_texts)
+    for i in range(1, length + 1):
+        if i == real_idx:
+            prompt_parts.append(f"{i}. {real_text}")
+        else:
+            prompt_parts.append(f"{i}. {next(iter_decoy_texts)}")
+
+    return "\n".join(prompt_parts)

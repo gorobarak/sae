@@ -15,8 +15,8 @@ dataset = load_dataset("fancyzhx/dbpedia_14", split="train")
 
 batch_size = 1024
 seq_len = 128
-hook_point = "blocks.24.hook_resid_post"
-hook_layer = 24 
+hook_point = "blocks.18.hook_resid_post"
+hook_layer = 18 
 prepend_bos = True
 pad_token_idx = model.tokenizer.pad_token_id 
 reactivations = False
@@ -37,8 +37,8 @@ for j in range(7):
         tokens = model.to_tokens(batch['content'], truncate=True, move_to_device=True, prepend_bos=prepend_bos)
         tokens = tokens[:, :seq_len] # [batch, seq_len]
         if tokens.shape[-1] < seq_len:
-            padding = torch.full((tokens.shape[0], seq_len - tokens.shape[1]), pad_token_idx, device=tokens.device)
-            tokens = torch.cat([tokens, padding], dim=1)
+            padding = torch.full((tokens.shape[0], seq_len - tokens.shape[-1]), pad_token_idx, device=tokens.device)
+            tokens = torch.cat([tokens, padding], dim=-1)
         
         pad_token_mask = (tokens == pad_token_idx) # [batch, seq_len]
         
