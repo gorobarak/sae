@@ -38,7 +38,7 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
              with open(os.path.join(dir_path, "activations.pt"), "rb") as f:
                 activations = torch.load(f) # [batch, seq, d_model] on CPU
         
-        # aggregate activations along sequence and batch dimensions
+        # aggregate activations along sequence and batch dimensions without bos token
         agg_activation = activations[:, 1:, :].mean(dim=(0, 1)) # [d_model]
         
         
@@ -64,17 +64,17 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
 
         # get descriptions for top-k features
         model_id = "gemma-2-2b"
-        layer = f"{layer}-gemmascope-res-16k"
+        neuropedia_sae_id = f"{layer}-gemmascope-res-16k"
         lines = []
         print_and_write(f"Top features for class {class_name}", lines)
         for feature_idx, act_val in zip(dict_topk.indices, dict_topk.values):
             if act_val == 0.0:
                 break
-            description = get_description(feature_idx, model_id=model_id, neuronpedia_id=layer)
+            description = get_description(feature_idx, model_id=model_id, neuronpedia_sae_id=neuropedia_sae_id)
             if description:
-                print_and_write(f"Feature {feature_idx}", lines)
+                print_and_write(f"Feature {feature_idx}:", lines)
                 print_and_write(f"{act_val.item()} -- {description}", lines)
-                print_and_write("---------------", lines)
+                print_and_write("", lines)
         
         # write to file
         filename = files_prefix + "top_features.txt"
@@ -161,18 +161,9 @@ def descriminate_task(use_reactivations=False, real_class_idx=2, decoy_class_idx
 
 if __name__ == "__main__":
     
-    # t = torch.randint(0, 100, (10,))
-    # top10_real = torch.topk(t, k=10, sorted=True)
-    # decoy_texts = [
-    #     "This is a decoy text 1.",
-    #     "This is a decoy text 2.",
-    #     "This is a decoy text 3."
-    # ]
-    # prompt = build_descriminate_task_prompt("real_text", decoy_texts, top10_real, 2, "blocks.8.hook_resid_pre")
-    # print(prompt)
-    
     # descriminate_task(use_reactivations=False, real_class_idx=5, decoy_class_idx=2, use_same_class_as_decoy=True, num_of_decoy_classes=5)
-    for bool_val in [True, False]:
-        generate_population_level_insights(num_dbpedia_classes=7, reactivations=bool_val, layer=24, matrix_multiply=True)
+    
+    for bool_val in [False]:
+        generate_population_level_insights(num_dbpedia_classes=7, reactivations=bool_val, layer=18, matrix_multiply=True)
 
     

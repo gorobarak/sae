@@ -2,9 +2,9 @@ import requests
 import sys
 
 
-def get_description(feature_idx, model_id="gemma-2-2b", neuronpedia_id="24-gemmascope-res-16k"):
+def get_description(feature_idx, model_id, neuronpedia_sae_id):
     r = requests.get(
-    f"https://www.neuronpedia.org/api/feature/{model_id}/{neuronpedia_id}/{feature_idx}"
+    f"https://www.neuronpedia.org/api/feature/{model_id}/{neuronpedia_sae_id}/{feature_idx}"
     )
     if r.status_code == 200:
         body = r.json()
@@ -16,3 +16,5 @@ def get_description(feature_idx, model_id="gemma-2-2b", neuronpedia_id="24-gemma
         return explanation["description"]
     else:
         print(f"Failed to fetch explanation: {r.status_code} - {r.reason}", file=sys.stderr)
+        print(f"Request URL: https://www.neuronpedia.org/api/feature/{model_id}/{neuronpedia_sae_id}/{feature_idx}", file=sys.stderr)
+        return None

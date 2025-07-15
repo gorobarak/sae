@@ -5,7 +5,7 @@ import sys
 
 def print_and_write(message, lines):
     print(message, file=sys.stderr)
-    lines.append("\n" + message)
+    lines.append(message + "\n")
 
 def class_idx_to_class_name_dbpedia(class_idx):
     class_names = [
