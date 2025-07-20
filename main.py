@@ -20,15 +20,15 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
     
     assert layer in range(0,26), "layer must be in range 0-25"
     model_name = "gemma-2-2b"
-    hook_point = f"blocks.{layer}.hook_resid_post"
     sae_release = "gemma-scope-2b-pt-res-canonical"
     sae_id = f"layer_{layer}/width_16k/canonical" 
     sae = SAE.from_pretrained(sae_release, sae_id, device="cuda")[0]
     files_prefix = get_file_prefix(reactivations=reactivations, matrix_multiply=matrix_multiply)
-
+    lines = []
+    
     for class_idx in range(num_dbpedia_classes):
         class_name = class_idx_to_class_name_dbpedia(class_idx)
-        dir_path = f"checkpoints/dbpedia_class_{class_idx}_{model_name}_{hook_point}"
+        dir_path = os.path.join("checkpoints", f"{model_name}_layer_{layer}", f"dbpedia_class_{class_idx}")
         
         # load activations/reactivations
         if reactivations:
@@ -37,6 +37,7 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
         else:
              with open(os.path.join(dir_path, "activations.pt"), "rb") as f:
                 activations = torch.load(f) # [batch, seq, d_model] on CPU
+                    
         
         # aggregate activations along sequence and batch dimensions without bos token
         agg_activation = activations[:, 1:, :].mean(dim=(0, 1)) # [d_model]
@@ -74,12 +75,56 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
             if description:
                 print_and_write(f"Feature {feature_idx}:", lines)
                 print_and_write(f"{act_val.item()} -- {description}", lines)
-                print_and_write("", lines)
+            
+
+    # write to file
+    filename = files_prefix + "PLI.txt"
+    with open(os.path.join("checkpoints",f"{model_name}_layer_{layer}" ,filename), "w") as f:
+        f.writelines(lines)
+
+def create_histogram_for_population_level_insights(num_dbpedia_classes=7, reactivations=False, layer=18, matrix_multiply=False):
+    assert layer in range(0,26), "layer must be in range 0-25"
+    model_name = "gemma-2-2b"
+    sae_release = "gemma-scope-2b-pt-res-canonical"
+    sae_id = f"layer_{layer}/width_16k/canonical" 
+    sae = SAE.from_pretrained(sae_release, sae_id, device="cuda")[0]
+    files_prefix = get_file_prefix(reactivations=reactivations, matrix_multiply=matrix_multiply)
+
+    for class_idx in range(num_dbpedia_classes):
+        dir_path = os.path.join("checkpoints", f"{model_name}_layer_{layer}", f"dbpedia_class_{class_idx}")
+
+        # load activations/reactivations
+        if reactivations:
+            with open(os.path.join(dir_path, "reactivations.pt"), "rb") as f:
+                activations = torch.load(f) # [batch, seq, d_model] on CPU
+        else:
+            with open(os.path.join(dir_path, "activations.pt"), "rb") as f:
+                activations = torch.load(f) # [batch, seq, d_model] on CPU
         
-        # write to file
-        filename = files_prefix + "top_features.txt"
-        with open(os.path.join(dir_path, filename), "w") as f:
-            f.writelines(lines)
+        # Filter bos token
+        activations = activations[:, 1:, :]  # [batch, seq_len - 1, d_model]
+
+        # Aggregate along sequence dimention
+        activations = activations.mean(dim=1) # [batch, d_model]
+        assert len(activations.shape) == 2, "Activations should be of shape [batch, d_model]"
+        assert activations.shape[0] == 40000, "Activations should have 40000 samples per class"
+        assert activations.shape[1] == 2304, "Activations should have 2304 features per sample"
+
+        # Get dictionaries activations
+        activations = activations.to('cuda')  # Move to GPU before passing into SAE
+        with torch.no_grad():
+            if matrix_multiply:
+                dict_activations = activations @ sae.W_enc # [batch, d_sae]
+        
+        # Sum along batch dimension to get count per dictionary feature
+        dict_activations_bool = dict_activations > 0.0
+        histogram = dict_activations_bool.long().sum(dim=0)  # [d_sae]
+
+        # Save histogram
+        filename = files_prefix + "histogram.pt"
+        with open(os.path.join(dir_path, filename), "wb") as f:
+            torch.save(histogram, f)
+        print(f"Histogram saved to {os.path.join(dir_path, filename)}", file=sys.stderr)
 
 def descriminate_task(use_reactivations=False, real_class_idx=2, decoy_class_idx=2, use_same_class_as_decoy=False, num_of_decoy_classes=25):
     if use_same_class_as_decoy:
@@ -163,7 +208,8 @@ if __name__ == "__main__":
     
     # descriminate_task(use_reactivations=False, real_class_idx=5, decoy_class_idx=2, use_same_class_as_decoy=True, num_of_decoy_classes=5)
     
-    for bool_val in [False]:
-        generate_population_level_insights(num_dbpedia_classes=7, reactivations=bool_val, layer=18, matrix_multiply=True)
+    for bool_val in [True, False]:
+        create_histogram_for_population_level_insights(num_dbpedia_classes=7, reactivations=bool_val, layer=24, matrix_multiply=True)
 
+    generate_population_level_insights(num_dbpedia_classes=7, reactivations=True, layer=18, matrix_multiply=True)
     

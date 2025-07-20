@@ -2,6 +2,7 @@ import torch
 from transformer_lens import HookedTransformer
 from datasets import load_dataset
 import os
+import sys
 
 
 # Load the model
@@ -19,14 +20,15 @@ hook_point = "blocks.18.hook_resid_post"
 hook_layer = 18 
 prepend_bos = True
 pad_token_idx = model.tokenizer.pad_token_id 
-reactivations = False
+reactivations = True
+num_classes = 7  
 
 
 NUM_SAMPELS_IN_CLASS = 40000
 
 # Create activations
 # iterate through the first 7 classes
-for j in range(7):
+for j in range(num_classes):
     activations= []
     offset = j * NUM_SAMPELS_IN_CLASS
     
@@ -61,11 +63,11 @@ for j in range(7):
 
     activations_tensor = torch.cat(activations, dim=0)  
     
-    dir_name = f"dbpedia_class_{j}_{model_name}_{hook_point}"
-    dir_path = os.path.join("checkpoints", dir_name)
+
+    dir_path = os.path.join("checkpoints", f"{model_name}_layer_{hook_layer}", f"dbpedia_class_{j}")
     os.makedirs(dir_path, exist_ok=True)
     file_name = "reactivations.pt" if reactivations else "activations.pt"
     with open(os.path.join(dir_path, file_name), "wb") as f:
         torch.save(activations_tensor, f)
     
-    print(f"Activations saved to {os.path.join(dir_path, file_name)}")
+    print(f"Activations saved to {os.path.join(dir_path, file_name)}", file=sys.stderr)
