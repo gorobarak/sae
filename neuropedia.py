@@ -89,7 +89,7 @@ def get_concept_feature_indicies(concept, model_id="gemma-2-2b", neuronpedia_sae
         feature_indices = []
         for res in body['results']:
             feature_indices.append(int(res['index']))
-        return feature_indices[:10]
+        return feature_indices[:10]  # Return top 10 features for the concept
     else:
         print(f"Failed to fetch concept features: {r.status_code} - {r.reason}", file=sys.stderr)
         print(f"model_id={model_id}, neuronpedia_sae_id={neuronpedia_sae_id}, concept={concept}", file=sys.stderr)
