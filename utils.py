@@ -1,8 +1,6 @@
 import sys
 
 
-
-
 def print_and_write(message, lines):
     print(message, file=sys.stderr)
     lines.append(message + "\n")
@@ -19,6 +17,9 @@ def class_idx_to_class_name_dbpedia(class_idx):
 def get_file_prefix(**kwargs):
     prefix = ""
     for key, value in kwargs.items():
-        if value:
-            prefix += f"{key}_"
+        if type(value) is bool:
+            if value:
+                prefix += f"{key}_"
+        if type(value) is int or type(value) is str:
+            prefix += f"{key}={value}_"
     return prefix
