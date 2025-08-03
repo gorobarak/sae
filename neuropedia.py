@@ -50,10 +50,15 @@ TOPICS = ["Health and Medicine",
         "LLM Use, Prompting and AI Ethics",
         "Small Talk, Humor and Social Chat",
         "Miscellaneous or Unclassifiable"]
+with open("neuropedia_token.txt", "r") as f:
+    NEURONPEDIA_API_KEY = f.read().strip()
 
 def get_description(feature_idx, model_id, neuronpedia_sae_id):
     r = requests.get(
-    f"https://www.neuronpedia.org/api/feature/{model_id}/{neuronpedia_sae_id}/{feature_idx}"
+    f"https://www.neuronpedia.org/api/feature/{model_id}/{neuronpedia_sae_id}/{feature_idx}",
+    headers={
+        "x-api-key": NEURONPEDIA_API_KEY
+    }
     )
     if r.status_code == 200:
         body = r.json()
@@ -69,12 +74,12 @@ def get_description(feature_idx, model_id, neuronpedia_sae_id):
         return None
     
 # Concept to his top features 
-# TODO: Does this returns the most relevant features for the concept?
 def get_concept_feature_indicies(concept, model_id="gemma-2-2b", neuronpedia_sae_id="24-gemmascope-res-16k"):
     r = requests.post(
                 "https://www.neuronpedia.org/api/explanation/search",
                 headers={
-                "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "x-api-key": NEURONPEDIA_API_KEY
                 },
                 json={
                 "modelId": model_id,

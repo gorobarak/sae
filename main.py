@@ -13,6 +13,7 @@ from query_gpt import query_gpt, build_descriminate_task_prompt
 import sys
 import random
 from neuropedia import get_description
+from baselines import create_dense_representation, dense_representation_concept_ranking
 
 
 
@@ -83,7 +84,7 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
     with open(os.path.join("checkpoints",f"{model_name}_layer_{layer}" ,filename), "w") as f:
         f.writelines(lines)
 
-def create_histogram_for_population_level_insights(k=20, num_dbpedia_classes=7, layer=24):
+def create_histogram_for_population_level_insights(ks=[20], num_dbpedia_classes=7, layer=24):
     assert layer in range(0,26), "layer must be in range 0-25"
     model_name = "gemma-2-2b"
     sae_release = "gemma-scope-2b-pt-res-canonical"
@@ -94,21 +95,19 @@ def create_histogram_for_population_level_insights(k=20, num_dbpedia_classes=7, 
         dir_path = os.path.join("checkpoints", f"{model_name}_layer_{layer}", f"dbpedia_class_{class_idx}")
 
         # load activations
-        # if reactivations:
-        #     with open(os.path.join(dir_path, "reactivations.pt"), "rb") as f:
-        #         activations = torch.load(f) # [batch, seq, d_model] on CPU
-        # else:
         with open(os.path.join(dir_path, "activations.pt"), "rb") as f:
             activations = torch.load(f) # [batch, seq, d_model] on CPU
-        
-        
+         
         # Filter bos token
         activations = activations[:, 1:, :]  # [batch, seq_len - 1, d_model]
 
         # Create histogram by counting the number of times a dictionary feature is amongst the top-k features across every token in the class
         NUM_SAMPLES_IN_CLASS = activations.shape[0]
         minibatch_size = 1024
-        histogram = torch.zeros(sae.cfg.d_sae, dtype=torch.long, device=sae.device)
+        histograms = {}
+        for k in ks:
+            histograms[k] = torch.zeros(sae.cfg.d_sae, dtype=torch.long, device='cuda')
+        
         for i in range(0, NUM_SAMPLES_IN_CLASS, minibatch_size):
             mini_batch = activations[i:i+minibatch_size, :, :]  # [minibatch_size, seq_len - 1, d_model]
             mini_batch = mini_batch.to('cuda')  # Move to GPU before mulplying with SAE encoder matrix
@@ -116,18 +115,22 @@ def create_histogram_for_population_level_insights(k=20, num_dbpedia_classes=7, 
                 dict_activations = mini_batch @ sae.W_enc  # [minibatch_size, seq_len - 1, d_sae]
 
             # Get top-k features for each token in the mini-batch
-            top_k_features = torch.topk(dict_activations, k=k, dim=-1)
-            top_k_features_indices = top_k_features.indices  # [minibatch_size, seq_len - 1, k]
-            top_k_features_indices = top_k_features_indices.reshape(-1)  # Flatten to [minibatch_size * (seq_len - 1) * k]
-            # Count frequency of each feature index in the top-k features and add to histogram
-            histogram += torch.bincount(top_k_features_indices, minlength=sae.cfg.d_sae)
+            max_k = max(ks)
+            top_max_k_features = torch.topk(dict_activations, k=max_k, dim=-1)
+            top_max_k_features_indices = top_max_k_features.indices  # [minibatch_size, seq_len - 1, max_k]
+            for k in ks:
+                top_k_features_indices = top_max_k_features_indices[:, :, :k]  # [minibatch_size, seq_len - 1, k]
+                top_k_features_indices = top_k_features_indices.reshape(-1)  # Flatten to [minibatch_size * (seq_len - 1) * k]
+                # Count frequency of each feature index in the top-k features and add to histogram
+                histograms[k] += torch.bincount(top_k_features_indices, minlength=sae.cfg.d_sae)
         
-        # Save histogram
-        files_prefix = get_file_prefix(k=k)
-        filename = files_prefix + "histogram_v2.pt"
-        with open(os.path.join(dir_path, filename), "wb") as f:
-            torch.save(histogram, f)
-        print(f"Histogram saved to {os.path.join(dir_path, filename)}", file=sys.stderr)
+        # Save histograms
+        for k, histogram in histograms.items():
+            files_prefix = get_file_prefix(k=k)
+            filename = files_prefix + "histogram_v2.pt"
+            with open(os.path.join(dir_path, filename), "wb") as f:
+                torch.save(histogram, f)
+            print(f"Histogram saved to {os.path.join(dir_path, filename)}", file=sys.stderr)
 
 def descriminate_task(use_reactivations=False, real_class_idx=2, decoy_class_idx=2, use_same_class_as_decoy=False, num_of_decoy_classes=25):
     if use_same_class_as_decoy:
@@ -205,15 +208,8 @@ def descriminate_task(use_reactivations=False, real_class_idx=2, decoy_class_idx
         f.write(f"Correct: {correct}\n")
         f.write(f"Total tests: {num_of_tests}\n")
 
-     
+    
 
 if __name__ == "__main__":
     
-    # descriminate_task(use_reactivations=False, real_class_idx=5, decoy_class_idx=2, use_same_class_as_decoy=True, num_of_decoy_classes=5)
-    
-    # for bool_val in [True, False]:
-    #     create_histogram_for_population_level_insights(num_dbpedia_classes=7, reactivations=bool_val, layer=24, matrix_multiply=True)
-
-
-    create_histogram_for_population_level_insights(k=20, num_dbpedia_classes=7, layer=24)
-    
+    create_histogram_for_population_level_insights(ks=[5, 7, 10, 15], num_dbpedia_classes=7, layer=24)
