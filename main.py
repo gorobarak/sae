@@ -84,7 +84,7 @@ def generate_population_level_insights(num_dbpedia_classes=7, reactivations=Fals
     with open(os.path.join("checkpoints",f"{model_name}_layer_{layer}" ,filename), "w") as f:
         f.writelines(lines)
 
-def create_histogram_for_population_level_insights(ks=[20], num_dbpedia_classes=7, layer=24):
+def create_histogram_for_population_level_insights(ks=[20], aggregate_seq=False, num_dbpedia_classes=7, layer=24):
     assert layer in range(0,26), "layer must be in range 0-25"
     model_name = "gemma-2-2b"
     sae_release = "gemma-scope-2b-pt-res-canonical"
@@ -113,20 +113,23 @@ def create_histogram_for_population_level_insights(ks=[20], num_dbpedia_classes=
             mini_batch = mini_batch.to('cuda')  # Move to GPU before mulplying with SAE encoder matrix
             with torch.no_grad():
                 dict_activations = mini_batch @ sae.W_enc  # [minibatch_size, seq_len - 1, d_sae]
+            
+            if aggregate_seq:
+                dict_activations = dict_activations.max(dim=1).values # [minibatch, d_sae]
 
-            # Get top-k features for each token in the mini-batch
+            # Get top-k features for each token  or aggregate token
             max_k = max(ks)
             top_max_k_features = torch.topk(dict_activations, k=max_k, dim=-1)
-            top_max_k_features_indices = top_max_k_features.indices  # [minibatch_size, seq_len - 1, max_k]
-            for k in ks:
-                top_k_features_indices = top_max_k_features_indices[:, :, :k]  # [minibatch_size, seq_len - 1, k]
-                top_k_features_indices = top_k_features_indices.reshape(-1)  # Flatten to [minibatch_size * (seq_len - 1) * k]
+            top_max_k_features_indices = top_max_k_features.indices  # [minibatch, seq_len - 1, max_k] OR [minibatch, max_k]
+            for k in ks:                    
+                top_k_features_indices = top_max_k_features_indices[..., :k]  # [minibatch, seq_len - 1, k] OR [minibatch, k]
+                top_k_features_indices = top_k_features_indices.reshape(-1)  # Flatten to [minibatch * (seq_len - 1) * k] OR [minibatch * k]
                 # Count frequency of each feature index in the top-k features and add to histogram
                 histograms[k] += torch.bincount(top_k_features_indices, minlength=sae.cfg.d_sae)
         
         # Save histograms
         for k, histogram in histograms.items():
-            files_prefix = get_file_prefix(k=k)
+            files_prefix = get_file_prefix(k=k, aggregate_seq=aggregate_seq)
             filename = files_prefix + "histogram_v2.pt"
             with open(os.path.join(dir_path, filename), "wb") as f:
                 torch.save(histogram, f)
@@ -211,5 +214,5 @@ def descriminate_task(use_reactivations=False, real_class_idx=2, decoy_class_idx
     
 
 if __name__ == "__main__":
-    
-    create_histogram_for_population_level_insights(ks=[5, 7, 10, 15], num_dbpedia_classes=7, layer=24)
+
+    create_histogram_for_population_level_insights(ks=[3, 10], aggregate_seq=True, num_dbpedia_classes=7, layer=24)
