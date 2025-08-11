@@ -4,7 +4,7 @@ import sys
 import requests 
 import pdb
 
-with open("openai_key_personal.txt", "r") as f:
+with open("tokens/openai_key_personal.txt", "r") as f:
     openai_key = f.read().strip()
 os.environ["OPENAI_API_KEY"] = openai_key
 

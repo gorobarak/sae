@@ -50,7 +50,8 @@ TOPICS = ["Health and Medicine",
         "LLM Use, Prompting and AI Ethics",
         "Small Talk, Humor and Social Chat",
         "Miscellaneous or Unclassifiable"]
-with open("neuropedia_token.txt", "r") as f:
+
+with open("tokens/neuronpedia_token.txt", "r") as f:
     NEURONPEDIA_API_KEY = f.read().strip()
 
 def get_description(feature_idx, model_id, neuronpedia_sae_id):

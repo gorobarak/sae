@@ -1,5 +1,6 @@
 import torch
 from transformer_lens import HookedTransformer
+from transformer_lens.utils import get_attention_mask
 from datasets import load_dataset
 import os
 import sys
@@ -47,7 +48,8 @@ for j in range(num_classes):
         if reactivations:
             tokens = torch.cat([tokens, tokens], dim=1) # [batch, seq_len * 2]
         
-        
+        # TODO: use attention mask
+        attention_mask = get_attention_mask(model.tokenizer, tokens, prepend_bos=prepend_bos)
         with torch.no_grad():
             _, cache = model.run_with_cache(
                 tokens,

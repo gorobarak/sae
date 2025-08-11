@@ -12,7 +12,7 @@ import os
 from query_gpt import query_gpt, build_descriminate_task_prompt
 import sys
 import random
-from neuropedia import get_description
+from neuronpedia import get_description
 from baselines import create_dense_representation, dense_representation_concept_ranking
 
 
@@ -117,7 +117,7 @@ def create_histogram_for_population_level_insights(ks=[20], aggregate_seq=False,
             if aggregate_seq:
                 dict_activations = dict_activations.max(dim=1).values # [minibatch, d_sae]
 
-            # Get top-k features for each token  or aggregate token
+            # Get top-k features for each token or aggregate token
             max_k = max(ks)
             top_max_k_features = torch.topk(dict_activations, k=max_k, dim=-1)
             top_max_k_features_indices = top_max_k_features.indices  # [minibatch, seq_len - 1, max_k] OR [minibatch, max_k]
