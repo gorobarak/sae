@@ -7,10 +7,10 @@ def print_and_write(message, lines):
 
 def class_idx_to_class_name_dbpedia(class_idx):
     class_names = [
-        "company", "educational_institution", "artist", "athlete", 
-        "office_holder", "mean_of_transportation", "building", 
-        "natural_place", "village", "animal", "plant", 
-        "album", "film", "written_work"
+        "company", "educational institution", "artist", "athlete", 
+        "office holder", "mean of transportation", "building", 
+        "natural place", "village", "animal", "plant", 
+        "album", "film", "written work"
     ]
     return class_names[class_idx]
 
@@ -23,3 +23,13 @@ def get_file_prefix(**kwargs):
         if type(value) is int or type(value) is str:
             prefix += f"{key}={value}_"
     return prefix
+
+def get_file_suffix(**kwargs):
+    suffix = ""
+    for key, value in kwargs.items():
+        if type(value) is bool:
+            if value:
+                suffix += f"_{key}"
+        if type(value) is int or type(value) is str:
+            suffix += f"_{key}={value}"
+    return suffix

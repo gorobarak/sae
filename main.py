@@ -1,5 +1,7 @@
+from matplotlib.pyplot import step
+import wandb
 from classifier import LinearClassifier
-from utils import class_idx_to_class_name_dbpedia, print_and_write, get_file_prefix
+from utils import class_idx_to_class_name_dbpedia, get_file_suffix, print_and_write, get_file_prefix
 from sae import VanillaSAE, TopKSAE, BatchTopKSAE, JumpReLUSAE
 from activation_store import ActivationsStore
 from config import get_default_sae_cfg, post_init_sae_cfg, get_default_classifier_cfg, post_init_classifier_cfg
@@ -13,7 +15,7 @@ from query_gpt import query_gpt, build_descriminate_task_prompt
 import sys
 import random
 from neuronpedia import get_description
-from baselines import create_dense_representation, dense_representation_concept_ranking
+from dense_representation import create_representations_for_classes, concept_ranking_whole_classes
 
 
 
@@ -129,8 +131,8 @@ def create_histogram_for_population_level_insights(ks=[20], aggregate_seq=False,
         
         # Save histograms
         for k, histogram in histograms.items():
-            files_prefix = get_file_prefix(k=k, aggregate_seq=aggregate_seq)
-            filename = files_prefix + "histogram_v2.pt"
+            file_suffix = get_file_suffix(k=k, aggregate_seq=aggregate_seq)
+            filename = "histogram_v2" + file_suffix + ".pt"
             with open(os.path.join(dir_path, filename), "wb") as f:
                 torch.save(histogram, f)
             print(f"Histogram saved to {os.path.join(dir_path, filename)}", file=sys.stderr)
@@ -215,4 +217,31 @@ def descriminate_task(use_reactivations=False, real_class_idx=2, decoy_class_idx
 
 if __name__ == "__main__":
 
-    create_histogram_for_population_level_insights(ks=[3, 10], aggregate_seq=True, num_dbpedia_classes=7, layer=24)
+
+    config = {"embedding_model": "sentence-transformers/all-mpnet-base-v2",
+              "dataset": "fancyzhx/dbpedia_14"}
+    run = wandb.init(project="privacy_experiment_whole_class_summarization", name="dense_representation", config=config)
+    run.define_metric("top1_acc", step_metric="epsilon")
+    run.define_metric("top3_acc", step_metric="epsilon")
+    concept_list = [
+    "Company",
+    "Educational institution",
+    "Artist",
+    "Athlete",
+    "Office holder",
+    "Mean of transportation",
+    "Building",
+    "Natural place",
+    "Village",
+    "Animal",
+    "Plant",
+    "Album",
+    "Film",
+    "Written work",
+    ]
+    for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
+        top1_accuracy, top3_accuracy = concept_ranking_whole_classes(concept_list, 
+                                       private=True,
+                                       epsilon=epsilon,
+                                       num_classes=7)
+        run.log({"top1_acc": top1_accuracy, "top3_acc": top3_accuracy, "epsilon": epsilon})
