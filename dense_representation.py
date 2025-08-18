@@ -12,7 +12,7 @@ import wandb
 NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA = 40000 
 
 
-def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", num_classes=7, normalize_embedding=False):
+def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", normalize_embedding=True):
     """
     Create a dense representation of the classes in the dataset using the specified embedding model.
     
@@ -33,7 +33,7 @@ def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", num_classe
     model.to(DEVICE); model.to(DTYPE)
     dataset = load_dataset(dataset, split='train')
 
-    for i in range(num_classes):
+    for i in range(7, 14):
         dense_representation_acc = torch.zeros((model.get_sentence_embedding_dimension()), dtype=DTYPE, device=DEVICE)
         offset = i * NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA
         for j in range(offset, offset + NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA, batch_size):
@@ -51,6 +51,7 @@ def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", num_classe
             
             # sum across batch dimension
             embeddings = embeddings.sum(dim=0) # [d_model]
+            # accumulate 
             dense_representation_acc += embeddings
 
         # Divide by number of samples in class to get mean
@@ -78,12 +79,12 @@ def rank_concepts(concepts,
         class_name = class_idx_to_class_name_dbpedia(i)
         dir_path = f"checkpoints/dense_representations/dbpedia_class_{i}"
         file_name = "dense_representation_normalize_embedding.pt"
-        dense_representation = torch.load(os.path.join(dir_path, file_name))
+        dense_representation = torch.load(os.path.join(dir_path, file_name))  # [d_model]
         dense_representation = dense_representation.to(device)
 
         if private:
            make_private_embedding(dense_representation, 
-                                  num_of_users_in_database=NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA, 
+                                  sensitivity=(dense_representation.size(0)/NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA), 
                                   epsilon=epsilon)
         
         # generate concept similarity scores
@@ -134,12 +135,11 @@ def rank_concepts(concepts,
 
 
 
-def make_private_embedding(embedding_vec, num_of_users_in_database, epsilon):
+def make_private_embedding(embedding_vec, sensitivity, epsilon):
     """
     add laplace noise to each coordinate
     """ 
-    d = embedding_vec.shape[0]
-    scale = d / (num_of_users_in_database * epsilon)
+    scale = sensitivity / epsilon
     laplace_dist = distributions.Laplace(loc=0, scale=scale)
     noise = laplace_dist.sample(embedding_vec.shape)
     noise = noise.to(embedding_vec.device)
@@ -186,5 +186,20 @@ def run_experiment_loop():
                    "top3_acc_std": top3_acc_std,
                    "epsilon": epsilon
                    })
-        
+
+def run_non_private_baseline():
+    """
+    Runs the concept ranking experiment for DBpedia classes without privacy.
+    """
+    model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+    model.to("cuda"); model.to(torch.float32)
+    config = {
+        "model": "sentence-transformers/all-mpnet-base-v2",
+        "num_of_classes_tested": 7
+    }
+    run = wandb.init(project=WANDB_PROJECT, name="dense_representation_non_private", config=config)
+    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=False, num_classes=7)
+    print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
+    run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
+
     

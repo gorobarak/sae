@@ -9,7 +9,7 @@ import wandb
 import sys
 
 
-def create_histogram(ks=[20], num_dbpedia_classes=7, layer=24):
+def create_histogram(ks=[3], layer=24):
     """
     Create histograms of feature counts for every class in dbpedia 
     Gets the top k features for token in every sequences in the class
@@ -21,7 +21,7 @@ def create_histogram(ks=[20], num_dbpedia_classes=7, layer=24):
     sae_id = f"layer_{layer}/width_16k/canonical" 
     sae = SAE.from_pretrained(sae_release, sae_id, device="cuda")[0]
 
-    for class_idx in range(num_dbpedia_classes):
+    for class_idx in range(7, 14):
         dir_path = os.path.join("checkpoints", f"{model_name}_layer_{layer}", f"dbpedia_class_{class_idx}")
 
         # load activations
@@ -63,8 +63,15 @@ def create_histogram(ks=[20], num_dbpedia_classes=7, layer=24):
             print(f"Histogram saved to {os.path.join(dir_path, filename)}", file=sys.stderr)
 
 
+def create_concept_to_features_dict(concept_list, model_id="gemma-2-2b", neuronpedia_sae_id="24-gemmascope-res-16k"):
+    concept_to_features_dict = {}
+    for concept in concept_list:
+        concept_to_features_dict[concept] = get_concept_feature_indicies(concept, model_id=model_id, neuronpedia_sae_id=neuronpedia_sae_id)
+    return concept_to_features_dict
 
-def rank_concepts(concept_list, k=20, 
+def rank_concepts(concept_list,
+                  concept_to_features_dict, 
+                  k=20, 
                   num_of_classes=7, 
                   layer=24,
                   private=True,
@@ -77,9 +84,6 @@ def rank_concepts(concept_list, k=20,
     NUM_SAMPLES_IN_CLASS = 40000
     NUM_OF_TOKENS_SEQUENCE = 127
     NUM_OF_TOKENS_IN_CLASS = NUM_SAMPLES_IN_CLASS * NUM_OF_TOKENS_SEQUENCE
-    concept_to_feature_indices = {}
-    for concept in concept_list:
-        concept_to_feature_indices[concept] = get_concept_feature_indicies(concept, model_id="gemma-2-2b", neuronpedia_sae_id="24-gemmascope-res-16k")
 
     top1_correct = 0
     top3_correct = 0
@@ -97,7 +101,7 @@ def rank_concepts(concept_list, k=20,
         # get concept frequencies
         concept_frequencies = []
         for concept in concept_list:
-            concept_feature_indices = concept_to_feature_indices[concept]
+            concept_feature_indices = concept_to_features_dict[concept]
             concept_frequency = histogram[concept_feature_indices].sum().item()
             concept_frequencies.append(concept_frequency)
         
@@ -135,8 +139,8 @@ def rank_concepts(concept_list, k=20,
 
 
  
-def make_private_histogram(histogram, epsilon, dim):
-    scale = dim / epsilon
+def make_private_histogram(histogram, epsilon, sensitivity):
+    scale = sensitivity / epsilon
     laplace = distributions.Laplace(loc=0, scale=scale)
     noise = laplace.sample(histogram.shape)
     noise = noise.to(histogram.device)
@@ -154,15 +158,14 @@ def run_experiment_loop():
     run.define_metric("top3_acc_std", step_metric="epsilon")
     top1_acc_results_dict = defaultdict(list)
     top3_acc_results_dict = defaultdict(list)
+    concept_to_feature_dict = create_concept_to_features_dict(DBPEDIA_CLASS_NAMES)
     for _ in range(NUM_OF_REPETITIONS):
         for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
-            top1_acc, top3_acc = rank_concepts(concept_list=DBPEDIA_CLASS_NAMES, 
-                                            k=3, 
-                                            num_of_classes=7,
-                                            layer=24,
-                                            private=True, 
-                                            epsilon=epsilon, 
-                                            save_filename="concept_ranking")
+            top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES,
+                                            concept_to_feature_dict,
+                                            k=3,
+                                            private=True,
+                                            epsilon=epsilon)
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
 
@@ -184,6 +187,19 @@ def run_experiment_loop():
         })
 
 
+
+def run_non_private_baseline():
+    """
+    Runs the concept ranking experiment for DBpedia classes without privacy.
+    """
+    config = {
+        "k": 3,
+        "layer": 24
+    }
+    run = wandb.init(project=WANDB_PROJECT, name="sae_insights_non_private", config=config)
+    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, k=3, layer=24, private=False)
+    print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
+    run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
 
 if __name__ == "__main__":
     pass
