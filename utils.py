@@ -1,5 +1,23 @@
 import sys
 
+# Global variables
+DBPEDIA_CLASS_NAMES=[
+    "Company",
+    "Educational institution",
+    "Artist",
+    "Athlete",
+    "Office holder",
+    "Mean of transportation",
+    "Building",
+    "Natural place",
+    "Village",
+    "Animal",
+    "Plant",
+    "Album",
+    "Film",
+    "Written work",
+]
+WANDB_PROJECT = "dbpedia_concept_ranking"
 
 def print_and_write(message, lines):
     print(message, file=sys.stderr)
