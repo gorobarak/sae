@@ -1,5 +1,4 @@
 import os
-os.environ["HF_HOME"] = "/home/yandex/APDL2425a/group_12/gorodissky/.cache/huggingface"
 from sae_lens import SAE
 import torch
 import torch.distributions as distributions
