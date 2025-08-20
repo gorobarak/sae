@@ -71,12 +71,12 @@ def create_concept_to_features_dict(concept_list, model_id="gemma-2-2b", neuronp
 
 def rank_concepts(concept_list,
                   concept_to_features_dict, 
-                  k=20, 
-                  num_of_classes=7, 
+                  k=3, 
                   layer=24,
                   private=True,
                   epsilon=0.5,
-                  save_filename="concept_ranking"):
+                  dataset="dbpedia",
+                  ):
     """
     Rank concepts based on their SAE features frequency in the class
     """
@@ -84,19 +84,20 @@ def rank_concepts(concept_list,
     NUM_SAMPLES_IN_CLASS = 40000
     NUM_OF_TOKENS_SEQUENCE = 127
     NUM_OF_TOKENS_IN_CLASS = NUM_SAMPLES_IN_CLASS * NUM_OF_TOKENS_SEQUENCE
+    num_of_classes = 14
 
     top1_correct = 0
     top3_correct = 0
     for i in range(num_of_classes):
         # load histogram
-        dir_path = os.path.join("checkpoints", f"gemma-2-2b_layer_{layer}", f"dbpedia_class_{i}")
+        dir_path = os.path.join("checkpoints", f"gemma-2-2b_layer_{layer}", f"{dataset}_class_{i}")
         filename = "histogram_v2" + get_file_suffix(k=k) + ".pt"
         with open(os.path.join(dir_path, filename), "rb") as f:
             histogram = torch.load(f)
         histogram = histogram.float()
         
         if private:
-            make_private_histogram(histogram, epsilon=epsilon, dim=k*NUM_OF_TOKENS_SEQUENCE)
+            make_private_histogram(histogram, epsilon=epsilon, sensitivity=k*NUM_OF_TOKENS_SEQUENCE)
         
         # get concept frequencies
         concept_frequencies = []
@@ -128,12 +129,15 @@ def rank_concepts(concept_list,
         lines.append("\n")
     
     # save to file
-    filename = save_filename + get_file_suffix(k=k, private=private)
+    filename = f"concept_ranking_{dataset}" + get_file_suffix(k=k, private=private)
     if private:
         filename += f"_epsilon={epsilon}"
     filename += ".txt"
     with open(os.path.join("checkpoints", "gemma-2-2b_layer_24", filename), "w") as f:
         f.writelines(lines)
+    
+    print(f"Saved {os.path.join('checkpoints', 'gemma-2-2b_layer_24', filename)}", file=sys.stderr)
+    print(f"top1 accuracy: {top1_correct / num_of_classes}, top3 accuracy: {top3_correct / num_of_classes}", file=sys.stderr)
 
     return (top1_correct / num_of_classes), (top3_correct / num_of_classes)
 
@@ -150,8 +154,9 @@ def make_private_histogram(histogram, epsilon, sensitivity):
 def run_experiment_loop():
     NUM_OF_REPETITIONS = 100
     config = {"k": "3",
+              "layer": 24,
             "num_of_repetitions": NUM_OF_REPETITIONS}
-    run = wandb.init(project=WANDB_PROJECT, name="sae_insights", config=config)
+    run = wandb.init(project=WANDB_PROJECT, name="sae_insights", config=config, reinit="finish_previous")
     run.define_metric("top1_acc", step_metric="epsilon")
     run.define_metric("top3_acc", step_metric="epsilon")
     run.define_metric("top1_acc_std", step_metric="epsilon")
@@ -165,10 +170,11 @@ def run_experiment_loop():
                                             concept_to_feature_dict,
                                             k=3,
                                             private=True,
-                                            epsilon=epsilon)
+                                            epsilon=epsilon,
+                                            dataset="dbpedia")
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
-
+    print("Finished running experiments", file=sys.stderr)
     # compute results
     for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
         top1_acc_results = torch.tensor(top1_acc_results_dict[str(epsilon)])
@@ -196,8 +202,9 @@ def run_non_private_baseline():
         "k": 3,
         "layer": 24
     }
-    run = wandb.init(project=WANDB_PROJECT, name="sae_insights_non_private", config=config)
-    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, k=3, layer=24, private=False)
+    run = wandb.init(project=WANDB_PROJECT, name="sae_insights_non_private", config=config, reinit="finish_previous")
+    concept_to_features_dict = create_concept_to_features_dict(DBPEDIA_CLASS_NAMES)
+    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, concept_to_features_dict, k=3, layer=24, private=False)
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
     run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
 

@@ -17,7 +17,7 @@ DBPEDIA_CLASS_NAMES=[
     "Film",
     "Written work",
 ]
-WANDB_PROJECT = "dbpedia_concept_ranking"
+WANDB_PROJECT = "dbpedia_concept_ranking_all_classes"
 
 def print_and_write(message, lines):
     print(message, file=sys.stderr)

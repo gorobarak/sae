@@ -9,7 +9,8 @@ import sys
 from utils import WANDB_PROJECT, class_idx_to_class_name_dbpedia, get_file_suffix, DBPEDIA_CLASS_NAMES
 from collections import defaultdict
 import wandb
-NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA = 40000 
+NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA = 40000
+
 
 
 def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", normalize_embedding=True):
@@ -70,14 +71,16 @@ def rank_concepts(concepts,
                     model,
                     private=True,
                     epsilon=0.1,
-                    num_classes=7):
+                    dataset="dbpedia"
+                    ):
     device = model.device
     lines = []
     top_1_correct = 0
     top_3_correct = 0
+    num_classes  = 14
     for i in range(num_classes):
         class_name = class_idx_to_class_name_dbpedia(i)
-        dir_path = f"checkpoints/dense_representations/dbpedia_class_{i}"
+        dir_path = f"checkpoints/dense_representation/{dataset}_class_{i}"
         file_name = "dense_representation_normalize_embedding.pt"
         dense_representation = torch.load(os.path.join(dir_path, file_name))  # [d_model]
         dense_representation = dense_representation.to(device)
@@ -119,8 +122,8 @@ def rank_concepts(concepts,
     suffix = get_file_suffix(private=private)
     if private:
         suffix += f"_epsilon={epsilon}"
-    filename = "concept_ranking_v2" + suffix + ".txt"
-    dir_path = "checkpoints/dense_representations"
+    filename = f"concept_ranking_{dataset}" + suffix + ".txt"
+    dir_path = "checkpoints/dense_representation"
     os.makedirs(dir_path, exist_ok=True)
     with open(os.path.join(dir_path, filename), "w") as f:
         f.writelines(lines)
@@ -160,16 +163,17 @@ def run_experiment_loop():
         "model": "sentence-transformers/all-mpnet-base-v2",
         "num_of_classes_tested": 7
     }
-    run = wandb.init(project=WANDB_PROJECT, name="dense_representation", config=config)
+    run = wandb.init(project=WANDB_PROJECT, name="dense_representation", config=config, reinit="finish_previous")
     run.define_metric("top1_acc", step_metric="epsilon")
     run.define_metric("top3_acc", step_metric="epsilon")
     run.define_metric("top1_acc_std", step_metric="epsilon")
     run.define_metric("top3_acc_std", step_metric="epsilon")
     for _ in range(NUM_REPETITIONS):
         for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
-            top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=True, epsilon=epsilon, num_classes=7)
+            top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=True, epsilon=epsilon, dataset="dbpedia")
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
+    print("finished running experiments")
 
     # compute results
     for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
@@ -197,9 +201,8 @@ def run_non_private_baseline():
         "model": "sentence-transformers/all-mpnet-base-v2",
         "num_of_classes_tested": 7
     }
-    run = wandb.init(project=WANDB_PROJECT, name="dense_representation_non_private", config=config)
-    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=False, num_classes=7)
+    run = wandb.init(project=WANDB_PROJECT, name="dense_representation_non_private", config=config, reinit="finish_previous")
+    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=False, dataset="dbpedia")
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
     run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
-
     
