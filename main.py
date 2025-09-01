@@ -1,11 +1,26 @@
 
-from pdb import run
+
+from calendar import c
+from random import sample
+from utils import DBPEDIA_CLASS_NAMES, AG_NEWS_CLASS_NAMES
+import wandb
+from sae_lens import SAE
 
 
 if __name__ == "__main__":
-    from sae_insights import run_experiment_loop, run_non_private_baseline
-    from dense_representation import run_experiment_loop as run_dense_experiment_loop, run_non_private_baseline as run_dense_non_private_baseline
-    run_experiment_loop()
-    run_non_private_baseline()
-    run_dense_experiment_loop()
-    run_dense_non_private_baseline()
+
+    from dense_representation import create_representations_for_classes
+    from create_activations_dataset import main
+    from sae_insights import create_histograms_for_dataset
+   
+    dataset = "yahoo_answers"
+    create_representations_for_classes(dataset)
+    
+    main(dataset)
+    create_histograms_for_dataset(dataset, ks=[3])
+
+    dataset = "yahoo_questions"
+    create_representations_for_classes(dataset)
+    
+    main(dataset)
+    create_histograms_for_dataset(dataset, ks=[3])

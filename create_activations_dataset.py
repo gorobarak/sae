@@ -4,17 +4,20 @@ from transformer_lens.utils import get_attention_mask
 from datasets import load_dataset
 import os
 import sys
+from utils import get_dataset_metadata, prepare_batch_texts, get_label_column
 
 
-def main():
+def main(dataset_name):
     # Load the model
     model_name = "gemma-2-2b" 
     dtype = torch.float32
     model = HookedTransformer.from_pretrained_no_processing(model_name, device="cuda", dtype=dtype)
 
-    # Load dataset
-    dataset = load_dataset("fancyzhx/dbpedia_14", split="train")
-
+    # Load dataset and sort by label
+    num_classes, class_to_size, hf_path = get_dataset_metadata(dataset_name)
+    dataset = load_dataset(hf_path, split="train")
+    label_column = get_label_column(dataset_name)
+    dataset = dataset.sort(label_column)
 
     batch_size = 1024
     seq_len = 128
@@ -22,20 +25,20 @@ def main():
     hook_layer = int(hook_point.split(".")[1])  # Extract layer number from hook point 
     pad_token_idx = model.tokenizer.pad_token_id 
     reactivations = False
-    num_classes = 7  
-    NUM_SAMPLES_IN_CLASS = 40000
-    num_of_classes_in_dbpedia = 14
+    
 
     # Create activations
-    for j in range(7, num_of_classes_in_dbpedia):
+    class_size_prefix_sum = 0
+    for j in range(0, num_classes):
         activations= []
-        offset = j * NUM_SAMPLES_IN_CLASS
-        
-        for i in range(offset, offset + NUM_SAMPLES_IN_CLASS, batch_size):
-            interval_end = min(i + batch_size, offset + NUM_SAMPLES_IN_CLASS)
+        cur_class_size = class_to_size[j]
+
+        for i in range(class_size_prefix_sum, class_size_prefix_sum + cur_class_size, batch_size):
+            interval_end = min(i + batch_size, class_size_prefix_sum + cur_class_size)
             batch = dataset[i: interval_end]
-            
-            encoded_batch = model.tokenizer(batch['content'], 
+            texts = prepare_batch_texts(batch, dataset_name)
+
+            encoded_batch = model.tokenizer(texts, 
                                             padding="max_length", 
                                             truncation=True,
                                             max_length=seq_len,
@@ -71,10 +74,12 @@ def main():
             
             activations.append(curr_acts.cpu()) # move to CPU to preserve GPU memory
 
+        class_size_prefix_sum += cur_class_size
 
         activations_tensor = torch.cat(activations, dim=0)  
-        dir_path = os.path.join("checkpoints", f"{model_name}_layer_{hook_layer}", f"dbpedia_class_{j}")
+        dir_path = os.path.join("checkpoints", f"{model_name}_layer_{hook_layer}", f"{dataset_name}", f"class_{j}")
         os.makedirs(dir_path, exist_ok=True)
         file_name = "reactivations.pt" if reactivations else "activations.pt"
         torch.save(activations_tensor, os.path.join(dir_path, file_name))
-        print(f"Activations saved to {os.path.join(dir_path, file_name)}", file=sys.stderr)
+        print(f"Saved activations to {os.path.join(dir_path, file_name)}", file=sys.stderr)
+

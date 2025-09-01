@@ -1,4 +1,3 @@
-from matplotlib.pyplot import step
 import torch
 import torch.nn.functional as F
 import torch.distributions as distributions
@@ -6,21 +5,19 @@ from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 import os
 import sys
-from utils import WANDB_PROJECT, class_idx_to_class_name_dbpedia, get_file_suffix, DBPEDIA_CLASS_NAMES
+from utils import  WANDB_DEFAULT_PROJECT, class_idx_to_class_name, get_file_suffix, prepare_batch_texts, get_dataset_metadata, get_label_column
 from collections import defaultdict
 import wandb
-NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA = 40000
 
 
 
-def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", normalize_embedding=True):
+def create_representations_for_classes(dataset_name):
     """
     Create a dense representation of the classes in the dataset using the specified embedding model.
     
     Args:
         dataset: The dataset to be embedded.
         embedding_model: The model used for generating embeddings.
-        num_classes: The number of classes in the dataset.
 
     Returns:
         None: The function saves the dense representations to disk.
@@ -29,65 +26,72 @@ def create_representations_for_classes(dataset="fancyzhx/dbpedia_14", normalize_
     DTYPE = torch.float32
     DEVICE = "cuda"
 
-    # Load the dataset and model
+    # Load model
     model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
     model.to(DEVICE); model.to(DTYPE)
-    dataset = load_dataset(dataset, split='train')
 
-    for i in range(7, 14):
+    # Load dataset
+    num_classes, class_to_size, hf_path = get_dataset_metadata(dataset_name)
+    dataset = load_dataset(hf_path, split="train")
+    label_column = get_label_column(dataset_name)
+    dataset = dataset.sort(label_column)
+
+    class_size_prefix_sum = 0
+    for i in range(0, num_classes):
         dense_representation_acc = torch.zeros((model.get_sentence_embedding_dimension()), dtype=DTYPE, device=DEVICE)
-        offset = i * NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA
-        for j in range(offset, offset + NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA, batch_size):
-           
+        cur_class_size = class_to_size[i]
+        for j in range(class_size_prefix_sum, class_size_prefix_sum + cur_class_size, batch_size):
+
             # get the current batch
-            interval_end = min(j + batch_size, offset + NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA)
+            interval_end = min(j + batch_size, class_size_prefix_sum + cur_class_size)
             batch = dataset[j: interval_end]
-            batch_texts = batch['content'] # [batch]
-            
+            batch_texts = prepare_batch_texts(batch, dataset_name) # [batch]
+
             # get model embeddings
             embeddings = model.encode(batch_texts) # [batch, d_model]
             embeddings = torch.tensor(embeddings, device=DEVICE) 
-            if normalize_embedding:
-                embeddings = F.normalize(embeddings, p=2, dim=1)
+            embeddings = F.normalize(embeddings, p=2, dim=1)
             
             # sum across batch dimension
             embeddings = embeddings.sum(dim=0) # [d_model]
             # accumulate 
             dense_representation_acc += embeddings
-
+        
         # Divide by number of samples in class to get mean
-        dense_representation_acc /= NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA
-    
-        dir_path = f"checkpoints/dense_representations/dbpedia_class_{i}"
+        dense_representation_acc /= cur_class_size
+
+        # Update prefix sum
+        class_size_prefix_sum += cur_class_size
+
+        dir_path = os.path.join("checkpoints", "dense_representation", f"{dataset_name}", f"class_{i}")
         os.makedirs(dir_path, exist_ok=True)
-        file_suffix = get_file_suffix(normalize_embedding=normalize_embedding)
-        file_name = "dense_representation" + file_suffix + ".pt"
+        file_name = "dense_representation.pt"
         torch.save(dense_representation_acc.cpu(), os.path.join(dir_path, file_name))
-        print(f"Saved dense representation for class {class_idx_to_class_name_dbpedia(i)}", file=sys.stderr)
+        print(f"Saved dense representation to {os.path.join(dir_path, file_name)}", file=sys.stderr)
 
 
 
-def rank_concepts(concepts,
+def dataset_classification(concepts,
+                    dataset,
                     model,
                     private=True,
-                    epsilon=0.1,
-                    dataset="dbpedia"
+                    epsilon=0.1
                     ):
     device = model.device
     lines = []
+    num_classes, class_to_size, _ = get_dataset_metadata(dataset)
+    
     top_1_correct = 0
     top_3_correct = 0
-    num_classes  = 14
     for i in range(num_classes):
-        class_name = class_idx_to_class_name_dbpedia(i)
-        dir_path = f"checkpoints/dense_representation/{dataset}_class_{i}"
-        file_name = "dense_representation_normalize_embedding.pt"
+        dir_path = os.path.join("checkpoints", "dense_representation", dataset, f"class_{i}")
+        file_name = "dense_representation.pt"
         dense_representation = torch.load(os.path.join(dir_path, file_name))  # [d_model]
         dense_representation = dense_representation.to(device)
 
         if private:
            make_private_embedding(dense_representation, 
-                                  sensitivity=(dense_representation.size(0)/NUMBER_OF_EXAMPLES_IN_CLASS_DBPEDIA), 
+                                  sensitivity=(dense_representation.size(0)/class_to_size[i]), 
                                   epsilon=epsilon)
         
         # generate concept similarity scores
@@ -104,9 +108,10 @@ def rank_concepts(concepts,
         sorted_scores = concept_scores[sorted_indices]
 
         # update scores
-        if class_name.lower() == sorted_concepts[0].lower():
+        class_name = class_idx_to_class_name(i, dataset)
+        if class_name == sorted_concepts[0]:
             top_1_correct += 1
-        if class_name in [c.lower() for c in sorted_concepts[:3]]:
+        if class_name in sorted_concepts[:3]:
             top_3_correct += 1
 
 
@@ -122,12 +127,12 @@ def rank_concepts(concepts,
     suffix = get_file_suffix(private=private)
     if private:
         suffix += f"_epsilon={epsilon}"
-    filename = f"concept_ranking_{dataset}" + suffix + ".txt"
-    dir_path = "checkpoints/dense_representation"
+    filename = "concept_ranking" + suffix + ".txt"
+    dir_path = f"checkpoints/dense_representation/{dataset}"
     os.makedirs(dir_path, exist_ok=True)
     with open(os.path.join(dir_path, filename), "w") as f:
         f.writelines(lines)
-    print("written concept ranking to", os.path.join(dir_path, filename), file=sys.stderr)
+    print(f"Saved concept ranking to {os.path.join(dir_path, filename)}", file=sys.stderr)
 
     # compute accuracy
     top_1_acc = top_1_correct / num_classes
@@ -149,34 +154,32 @@ def make_private_embedding(embedding_vec, sensitivity, epsilon):
     embedding_vec += noise
 
 
-def run_experiment_loop():
+def run_experiment_loop(concepts, dataset, epsilons,  wandb_project=WANDB_DEFAULT_PROJECT, num_repetitions=100):
     """
-    Runs the concept ranking experiment for DBpedia classes multiple times and averages results.
+    Runs the concept ranking experiment for dataset classes multiple times and averages results.
     """
-    NUM_REPETITIONS=100
     model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
     model.to("cuda"); model.to(torch.float32)
     top1_acc_results_dict = defaultdict(list)
     top3_acc_results_dict = defaultdict(list)
     config={
-        "num_repetitions": NUM_REPETITIONS,
+        "num_repetitions": num_repetitions,
         "model": "sentence-transformers/all-mpnet-base-v2",
-        "num_of_classes_tested": 7
     }
-    run = wandb.init(project=WANDB_PROJECT, name="dense_representation", config=config, reinit="finish_previous")
+    run = wandb.init(project=wandb_project, name="dense_representation", config=config, reinit="finish_previous")
     run.define_metric("top1_acc", step_metric="epsilon")
     run.define_metric("top3_acc", step_metric="epsilon")
     run.define_metric("top1_acc_std", step_metric="epsilon")
     run.define_metric("top3_acc_std", step_metric="epsilon")
-    for _ in range(NUM_REPETITIONS):
-        for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
-            top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=True, epsilon=epsilon, dataset="dbpedia")
+    for _ in range(num_repetitions):
+        for epsilon in epsilons:
+            top1_acc, top3_acc = dataset_classification(concepts, dataset, model, private=True, epsilon=epsilon)
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
-    print("finished running experiments")
 
+    
     # compute results
-    for epsilon in [0.1, 0.5, 1, 2, 5, 10]:
+    for epsilon in epsilons:
         top1_acc_results = torch.tensor(top1_acc_results_dict[str(epsilon)])
         top3_acc_results = torch.tensor(top3_acc_results_dict[str(epsilon)])
         top1_acc_mean = top1_acc_results.mean().item()
@@ -190,19 +193,21 @@ def run_experiment_loop():
                    "top3_acc_std": top3_acc_std,
                    "epsilon": epsilon
                    })
+    print("Finished running experiments", file=sys.stderr)
 
-def run_non_private_baseline():
+def run_non_private_baseline(concepts, dataset, wandb_project=WANDB_DEFAULT_PROJECT):
     """
-    Runs the concept ranking experiment for DBpedia classes without privacy.
+    Runs the concept ranking experiment without privacy.
     """
     model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
     model.to("cuda"); model.to(torch.float32)
     config = {
         "model": "sentence-transformers/all-mpnet-base-v2",
-        "num_of_classes_tested": 7
     }
-    run = wandb.init(project=WANDB_PROJECT, name="dense_representation_non_private", config=config, reinit="finish_previous")
-    top1_acc, top3_acc = rank_concepts(DBPEDIA_CLASS_NAMES, model, private=False, dataset="dbpedia")
+    run = wandb.init(project=wandb_project, name="dense_representation_non_private", config=config, reinit="finish_previous")
+    top1_acc, top3_acc = dataset_classification(concepts, dataset, model, private=False)
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
     run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
-    
+
+def hello():
+    print("Dense representation")
