@@ -8,10 +8,11 @@ import wandb
 import torch.distributions as distributions
 # %%
 api = wandb.Api()
-wandb_project = "dbpedia_classification"
-title = "DBPEDIA"
+wandb_project = "yahoo_answers_classification"
+title = "YAHOO ANSWERS"
 for run in api.runs(f"gorodissky-tel-aviv-university/{wandb_project}"):
     name = run.name
+    print(run.created_at)
     if name== "sae_insights":
         sae_insights_df = run.history(pandas=True)
     elif name == "sae_insights_non_private":
@@ -86,7 +87,6 @@ axes[1].set_xlabel("Epsilon")
 axes[1].set_ylabel("Top-3 Accuracy")
 axes[1].set_title("Top-3 Accuracy vs Epsilon")
 axes[1].legend()
-
 
 fig.suptitle(title)
 fig.tight_layout()

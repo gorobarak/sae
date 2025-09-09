@@ -5,7 +5,7 @@ from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 import os
 import sys
-from utils import  WANDB_DEFAULT_PROJECT, class_idx_to_class_name, get_file_suffix, prepare_batch_texts, get_dataset_metadata, get_label_column
+from utils import  WANDB_DEFAULT_PROJECT, class_idx_to_class_name, get_file_suffix, prepare_batch_texts, get_dataset_metadata, get_label_column, get_dataset_class_names
 from collections import defaultdict
 import wandb
 
@@ -71,8 +71,7 @@ def create_representations_for_classes(dataset_name):
 
 
 
-def dataset_classification(concepts,
-                    dataset,
+def dataset_classification(dataset,
                     model,
                     private=True,
                     epsilon=0.1
@@ -80,6 +79,7 @@ def dataset_classification(concepts,
     device = model.device
     lines = []
     num_classes, class_to_size, _ = get_dataset_metadata(dataset)
+    class_names = get_dataset_class_names(dataset)
     
     top_1_correct = 0
     top_3_correct = 0
@@ -94,32 +94,21 @@ def dataset_classification(concepts,
                                   sensitivity=(dense_representation.size(0)/class_to_size[i]), 
                                   epsilon=epsilon)
         
-        # generate concept similarity scores
-        concept_scores = []
-        for concept in concepts:
-            concept_embedding = model.encode(concept) #[d_model]
-            concept_embedding = torch.tensor(concept_embedding, device=device)
-            concept_scores.append(F.cosine_similarity(dense_representation, concept_embedding, dim=0).item())
-
-        # sort concepts by similarity scores
-        concept_scores = torch.tensor(concept_scores)
-        sorted_indices = torch.argsort(concept_scores, descending=True)
-        sorted_concepts = [concepts[i] for i in sorted_indices]
-        sorted_scores = concept_scores[sorted_indices]
+        # Classify dense representation 
+        ranked_classes, scores = rank_concepts(class_names, dense_representation, model)
 
         # update scores
-        class_name = class_idx_to_class_name(i, dataset)
-        if class_name == sorted_concepts[0]:
+        if class_names[i] == ranked_classes[0]:
             top_1_correct += 1
-        if class_name in sorted_concepts[:3]:
+        if class_names[i] in ranked_classes[:3]:
             top_3_correct += 1
 
 
         # write ranking
-        lines.append(f"Ranking of concepts for class {class_name}:\n")
+        lines.append(f"Ranking of concepts for class {class_names[i]}:\n")
         j = 1
-        for concept, score in zip(sorted_concepts, sorted_scores):
-            lines.append(f"{j}.{concept}: {score.item():.3f}\n")
+        for class_name, score in zip(ranked_classes, scores):
+            lines.append(f"{j}.{class_name}: {score.item():.3f}\n")
             j += 1
         lines.append("\n")
     
@@ -140,7 +129,20 @@ def dataset_classification(concepts,
     print(f"Top-1 accuracy: {top_1_acc:.3f}, Top-3 accuracy: {top_3_acc:.3f}", file=sys.stderr)
     return top_1_acc, top_3_acc
 
+def rank_concepts(concepts, dense_representation, model):
+    concept_scores = []
+    for concept in concepts:
+        concept_embedding = model.encode(concept) #[d_model]
+        concept_embedding = torch.tensor(concept_embedding, device=model.device)
+        concept_scores.append(F.cosine_similarity(dense_representation, concept_embedding, dim=0).item())
 
+    # sort concepts by similarity scores
+    concept_scores = torch.tensor(concept_scores)
+    sorted_indices = torch.argsort(concept_scores, descending=True)
+    sorted_concepts = [concepts[i] for i in sorted_indices]
+    sorted_scores = concept_scores[sorted_indices]
+
+    return sorted_concepts, sorted_scores
 
 
 def make_private_embedding(embedding_vec, sensitivity, epsilon):
@@ -154,7 +156,10 @@ def make_private_embedding(embedding_vec, sensitivity, epsilon):
     embedding_vec += noise
 
 
-def run_experiment_loop(concepts, dataset, epsilons,  wandb_project=WANDB_DEFAULT_PROJECT, num_repetitions=100):
+def run_experiment_loop(dataset, 
+                        epsilons,  
+                        wandb_project=WANDB_DEFAULT_PROJECT, 
+                        num_repetitions=100):
     """
     Runs the concept ranking experiment for dataset classes multiple times and averages results.
     """
@@ -173,7 +178,7 @@ def run_experiment_loop(concepts, dataset, epsilons,  wandb_project=WANDB_DEFAUL
     run.define_metric("top3_acc_std", step_metric="epsilon")
     for _ in range(num_repetitions):
         for epsilon in epsilons:
-            top1_acc, top3_acc = dataset_classification(concepts, dataset, model, private=True, epsilon=epsilon)
+            top1_acc, top3_acc = dataset_classification(dataset, model, private=True, epsilon=epsilon)
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
 
@@ -195,7 +200,8 @@ def run_experiment_loop(concepts, dataset, epsilons,  wandb_project=WANDB_DEFAUL
                    })
     print("Finished running experiments", file=sys.stderr)
 
-def run_non_private_baseline(concepts, dataset, wandb_project=WANDB_DEFAULT_PROJECT):
+def run_non_private_baseline(dataset, 
+                             wandb_project=WANDB_DEFAULT_PROJECT):
     """
     Runs the concept ranking experiment without privacy.
     """
@@ -205,7 +211,7 @@ def run_non_private_baseline(concepts, dataset, wandb_project=WANDB_DEFAULT_PROJ
         "model": "sentence-transformers/all-mpnet-base-v2",
     }
     run = wandb.init(project=wandb_project, name="dense_representation_non_private", config=config, reinit="finish_previous")
-    top1_acc, top3_acc = dataset_classification(concepts, dataset, model, private=False)
+    top1_acc, top3_acc = dataset_classification(dataset, model, private=False)
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
     run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
 

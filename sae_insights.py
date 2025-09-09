@@ -1,6 +1,4 @@
 import os
-from random import sample
-import re
 from sae_lens import SAE
 import torch
 import torch.distributions as distributions
@@ -42,6 +40,7 @@ def create_histograms(activations_cache,
         histograms[k] = torch.zeros(sae.cfg.d_sae, dtype=torch.long, device='cuda')
 
     NUM_SAMPLES_IN_CLASS = activations_cache.shape[0]
+
     minibatch_size = 1024
     for i in range(0, NUM_SAMPLES_IN_CLASS, minibatch_size):
         mini_batch = activations_cache[i:i+minibatch_size, :, :]  # [minibatch, seq_len, d_model]
@@ -57,6 +56,7 @@ def create_histograms(activations_cache,
             idxs = idxs.cuda() 
             dict_activations = torch.gather(dict_activations, 1, idxs) # [minibatch, sample_size, d_sae]
             # seq_len = sample size
+
 
         # Get top-k features for each token
         max_k = max(ks)
@@ -119,7 +119,8 @@ def dataset_classification_random(dataset,
                                   sae, 
                                   k=3, 
                                   private=False, 
-                                  epsilon=0.1):
+                                  epsilon=0.1,
+                                  downsample_class_size=False):
     """
     Classifies a dataset's classes using random histograms.
     Assumes that the dataset activations are cached.
@@ -132,12 +133,13 @@ def dataset_classification_random(dataset,
         k: top k used to build histogram
         private: Whether to use differential privacy.
         epsilon: Privacy budget for differential privacy.
+        downsample_class_size: Whether to downsample class size to 10k for faster experiments
 
     Returns:
         top1_acc, top3_acc
     """
     assert 0 < sample_size_portion <= 1, "sample_size_portion must be between 0 and 1"
-    num_classes, class_to_size, _ = get_dataset_metadata(dataset)
+    num_classes, _, _ = get_dataset_metadata(dataset)
     class_names = get_dataset_class_names(dataset)
     lines = []
     
@@ -148,6 +150,13 @@ def dataset_classification_random(dataset,
         # create hisogram
         path = f"checkpoints/gemma-2-2b_layer_24/{dataset}/class_{class_idx}/activations.pt"
         activations = torch.load(path)  # [class_size, seq_len, d_model]
+        class_size = activations.size(0)
+        
+        # downsaple class size to 10k so experiments are faster
+        if downsample_class_size:
+            if class_size > 10000:
+                activations = activations[:10000, :, :]  # downsample class size to 10k
+
         sample_size = int(activations.size(1) * sample_size_portion)
         histograms = create_histograms(activations, 
                                       sae, 
@@ -155,7 +164,7 @@ def dataset_classification_random(dataset,
                                       random=True, 
                                       sample_size=sample_size)
         histogram = histograms[k]
-        print(f"Created random histogram instance for class {class_names[class_idx]}")
+        print(f"Created random histogram instance for class {class_names[class_idx]}", file=sys.stderr)
         
         # classify it
         ranked_classes, frequencies = rank_concepts(class_names, 
@@ -176,7 +185,7 @@ def dataset_classification_random(dataset,
         lines.append(f"Ranking of concepts for class {class_names[class_idx]}:\n")
         j = 1
         for concept, freq in zip(ranked_classes, frequencies):
-            lines.append(f"{j}.{concept}: {freq.item()} ({(freq.item() / (class_to_size[class_idx] * sample_size * k) ) * 100:.2f}%)\n")
+            lines.append(f"{j}.{concept}: {freq.item()} ({(freq.item() / (class_size * sample_size * k) ) * 100:.2f}%)\n")
             j += 1
         lines.append("\n")
     
@@ -208,7 +217,6 @@ def dataset_classification(dataset,
     Assumes there is a histogram saved for every class in the dataset 
 
     Args:
-        concepts: A list of concepts to test against
         dataset: The dataset to classify
         k: the number of top k features used to construct the histograms
         layer: the layer the activations are taken from
@@ -368,13 +376,11 @@ def run_experiment_loop_random_SI(dataset,
                         epsilons, 
                         wandb_project=WANDB_DEFAULT_PROJECT, 
                         num_repetitions=100, 
-                        sample_size_portion=0.5):
-    config = {
-        "k": "3",
-        "layer": 24,
-        "num_of_repetitions": num_repetitions,
-        "sample_size_portion": sample_size_portion  
-    }
+                        sample_size_portion=0.5,
+                        config={}):
+    config["k"] = 3; config["layer"] = 24
+    config["num_of_repetitions"] = num_repetitions
+    config["sample_size_portion"] = sample_size_portion
     
     run = init_wandb(wandb_project, "sae_insights_random", config)
 
@@ -398,7 +404,8 @@ def run_experiment_loop_random_SI(dataset,
                                             sae=sae,
                                             k=3,
                                             private=True,
-                                            epsilon=epsilon
+                                            epsilon=epsilon,
+                                            downsample_class_size=True
                                             )
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
@@ -422,7 +429,7 @@ def run_experiment_loop_random_SI(dataset,
 
     print("finish running random SI experiments", file=sys.stderr)
 
-def run_non_private_baseline(concepts, dataset, wandb_project=WANDB_DEFAULT_PROJECT):
+def run_non_private_baseline(dataset, wandb_project=WANDB_DEFAULT_PROJECT):
     """
     Runs the concept ranking experiment for dataset classes without privacy.
     """
@@ -431,8 +438,17 @@ def run_non_private_baseline(concepts, dataset, wandb_project=WANDB_DEFAULT_PROJ
         "layer": 24
     }
     run = wandb.init(project=wandb_project, name="sae_insights_non_private", config=config, reinit="finish_previous")
-    concept_to_features_dict = create_concept_to_features_dict(concepts)
-    top1_acc, top3_acc = dataset_classification(concepts, concept_to_features_dict, dataset, k=3, layer=24, private=False)
+    
+    class_names = get_dataset_class_names(dataset)
+    class_name_to_features_dict = create_concept_to_features_dict(class_names)
+    
+    top1_acc, top3_acc = dataset_classification(dataset,
+                                                class_name_to_features_dict,
+                                                k=3,
+                                                layer=24,
+                                                private=False
+                                                )
+    
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
     run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
 
