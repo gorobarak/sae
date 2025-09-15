@@ -8,8 +8,8 @@ import wandb
 import torch.distributions as distributions
 # %%
 api = wandb.Api()
-wandb_project = "yahoo_answers_classification"
-title = "YAHOO ANSWERS"
+wandb_project = "dbpedia_classification"
+title = "DBPEDIA"
 for run in api.runs(f"gorodissky-tel-aviv-university/{wandb_project}"):
     name = run.name
     print(run.created_at)
@@ -21,6 +21,10 @@ for run in api.runs(f"gorodissky-tel-aviv-university/{wandb_project}"):
         dense_representation_df= run.history(pandas=True)
     elif name == "dense_representation_non_private":
         dense_representation_non_private_df = run.history(pandas=True)
+    elif name == "sae_insights_TFIDF":
+        sae_insights_tfidf_df = run.history(pandas=True)
+    elif name == "sae_insights_TFIDF_non_private":
+        sae_insights_tfidf_non_private_df = run.history(pandas=True)
 
 print("sae insights df:")
 print(sae_insights_df)
@@ -30,6 +34,10 @@ print("sae insights non private df:")
 print(sae_insights_non_private_df)
 print("dense representation non private df:")
 print(dense_representation_non_private_df)
+print("sae insights tfidf df:")
+print(sae_insights_tfidf_df)
+print("sae insights tfidf non private df:")
+print(sae_insights_tfidf_non_private_df)
 # %%
 fig, axes = plt.subplots(1, 2)
 
@@ -56,6 +64,16 @@ axes[0].axhline(sae_insights_non_private_df["top1_acc"].item(),
                 linestyle='--', color=color)
 
 
+# SI TFIDF
+color = "green"
+axes[0].plot(sae_insights_tfidf_df["epsilon"], sae_insights_tfidf_df["top1_acc"], 
+             marker='o', label="sae_insights_TFIDF", color=color)
+lower = sae_insights_tfidf_df["top1_acc"] - sae_insights_tfidf_df["top1_acc_std"]
+upper = sae_insights_tfidf_df["top1_acc"] + sae_insights_tfidf_df["top1_acc_std"]
+axes[0].fill_between(sae_insights_tfidf_df["epsilon"], lower, upper, color=color, alpha=0.15)
+axes[0].axhline(sae_insights_tfidf_non_private_df["top1_acc"].item(), 
+                linestyle='--', color=color)
+
 axes[0].set_xlabel("Epsilon")
 # axes[0].set_xscale("log")
 axes[0].set_ylabel("Top-1 Accuracy")
@@ -63,6 +81,7 @@ axes[0].set_title("Top-1 Accuracy vs Epsilon")
 axes[0].legend()
 
 # TOP3 acc
+
 # DR
 color = "blue"
 axes[1].plot(dense_representation_df["epsilon"], dense_representation_df["top3_acc"], 
@@ -82,11 +101,23 @@ axes[1].fill_between(sae_insights_df["epsilon"], lower, upper, color=color, alph
 axes[1].axhline(sae_insights_non_private_df["top3_acc"].item(), 
                 linestyle='--', color=color)
 
+
+# SI TFIDF
+color = "green"
+axes[1].plot(sae_insights_tfidf_df["epsilon"], sae_insights_tfidf_df["top3_acc"], 
+             marker='o', label="sae_insights_TFIDF", color=color)
+lower = sae_insights_tfidf_df["top3_acc"] - sae_insights_tfidf_df["top3_acc_std"]
+upper = sae_insights_tfidf_df["top3_acc"] + sae_insights_tfidf_df["top3_acc_std"]
+axes[1].fill_between(sae_insights_tfidf_df["epsilon"], lower, upper, color=color, alpha=0.15)
+axes[1].axhline(sae_insights_tfidf_non_private_df["top3_acc"].item(), 
+                linestyle='--', color=color)
+
 axes[1].set_xlabel("Epsilon")
 # axes[1].set_xscale("log")
 axes[1].set_ylabel("Top-3 Accuracy")
 axes[1].set_title("Top-3 Accuracy vs Epsilon")
 axes[1].legend()
+
 
 fig.suptitle(title)
 fig.tight_layout()

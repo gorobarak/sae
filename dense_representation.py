@@ -13,14 +13,14 @@ import wandb
 
 def create_representations_for_classes(dataset_name):
     """
-    Create a dense representation of the classes in the dataset using the specified embedding model.
-    
+    Create dense representations of the classes in the dataset using the specified embedding model.
+
     Args:
         dataset: The dataset to be embedded.
         embedding_model: The model used for generating embeddings.
 
     Returns:
-        None: The function saves the dense representations to disk.
+        None: The function saves the mean representations and the tensor of representations to disk for every class.
     """
     batch_size = 256
     DTYPE = torch.float32
@@ -40,6 +40,7 @@ def create_representations_for_classes(dataset_name):
     for i in range(0, num_classes):
         dense_representation_acc = torch.zeros((model.get_sentence_embedding_dimension()), dtype=DTYPE, device=DEVICE)
         cur_class_size = class_to_size[i]
+        embeddings_acc = []
         for j in range(class_size_prefix_sum, class_size_prefix_sum + cur_class_size, batch_size):
 
             # get the current batch
@@ -51,7 +52,8 @@ def create_representations_for_classes(dataset_name):
             embeddings = model.encode(batch_texts) # [batch, d_model]
             embeddings = torch.tensor(embeddings, device=DEVICE) 
             embeddings = F.normalize(embeddings, p=2, dim=1)
-            
+            embeddings_acc.append(embeddings)
+
             # sum across batch dimension
             embeddings = embeddings.sum(dim=0) # [d_model]
             # accumulate 
@@ -59,17 +61,25 @@ def create_representations_for_classes(dataset_name):
         
         # Divide by number of samples in class to get mean
         dense_representation_acc /= cur_class_size
-
-        # Update prefix sum
-        class_size_prefix_sum += cur_class_size
-
+        # Save
         dir_path = os.path.join("checkpoints", "dense_representation", f"{dataset_name}", f"class_{i}")
         os.makedirs(dir_path, exist_ok=True)
         file_name = "dense_representation.pt"
         torch.save(dense_representation_acc.cpu(), os.path.join(dir_path, file_name))
         print(f"Saved dense representation to {os.path.join(dir_path, file_name)}", file=sys.stderr)
 
+        # Concatenate all embeddings for the class
+        embeddings_acc = torch.cat(embeddings_acc, dim=0) # [cur_class_size, d_model]
+        assert embeddings_acc.size(0) == cur_class_size
+        assert embeddings_acc.size(1) == model.get_sentence_embedding_dimension()
+        assert len(embeddings_acc.size()) == 2
+        # Save
+        file_name = "all_representations.pt"
+        torch.save(embeddings_acc.cpu(), os.path.join(dir_path, file_name))
+        print(f"Saved all representations to {os.path.join(dir_path, file_name)}", file=sys.stderr)
 
+        # Update prefix sum
+        class_size_prefix_sum += cur_class_size
 
 def dataset_classification(dataset,
                     model,

@@ -1,5 +1,6 @@
 import os
 from sae_lens import SAE
+from sympy import use
 import torch
 import torch.distributions as distributions
 from collections import defaultdict
@@ -72,11 +73,15 @@ def create_histograms(activations_cache,
 
 def rank_concepts(concepts, 
                   concept_to_features_dict,  
-                  histogram, 
+                  histogram,
+                  max_count,
+                  general_histogram=None,
+                  max_count_general=None,
                   private=False, 
                   epsilon=0.1, 
-                  k=3, 
-                  num_tokens_in_sequence=128):
+                  k=3,
+                  num_tokens_in_sequence=128,
+                  use_idf_weights=True):
     """
     Rank concepts based on their feature counts in the histogram
 
@@ -84,6 +89,9 @@ def rank_concepts(concepts,
         concepts: list of concept names
         concepts_to_features_dict: dict mapping concept names to their feature indices
         histogram: histogram of shape [d_sae] containing the counts of features
+        max_count: the maximum possible count of a feature in the histogram
+        general_histogram: a histogram of feature counts over a general corpus
+        max_count_general: the maximum possible count of a feature in the general histogram
         private: whether to make the histogram private
         epsilon: privacy budget for differential privacy
         k: the top k used to construct the histogram
@@ -94,15 +102,27 @@ def rank_concepts(concepts,
 
     """
     histogram = histogram.float()
+    general_histogram = general_histogram.float().to(histogram.device)  
     
     if private:
         make_private_histogram(histogram, epsilon=epsilon, sensitivity=k*num_tokens_in_sequence)
     
+    # prepare feature IDF weights
+    if use_idf_weights:
+        idf_weights = torch.log((max_count_general + 1) / (general_histogram + 1))  # [d_sae]
+
     # get concept frequencies
     concept_frequencies = []
     for concept in concepts:
-        concept_feature_indices = concept_to_features_dict[concept]
-        concept_frequency = histogram[concept_feature_indices].sum().item()
+        
+        feature_indices = concept_to_features_dict[concept]
+        feature_frequencies = histogram[feature_indices] / max_count
+
+        if use_idf_weights:
+            feature_idf_weights = idf_weights[feature_indices]
+            feature_frequencies = feature_frequencies * feature_idf_weights
+
+        concept_frequency = feature_frequencies.sum().item()
         concept_frequencies.append(concept_frequency)
     
     # sort concepts by frequency
@@ -113,97 +133,6 @@ def rank_concepts(concepts,
 
     return sorted_concepts, sorted_frequencies
 
-def dataset_classification_random(dataset, 
-                                  class_names_to_features_dict, 
-                                  sample_size_portion, 
-                                  sae, 
-                                  k=3, 
-                                  private=False, 
-                                  epsilon=0.1,
-                                  downsample_class_size=False):
-    """
-    Classifies a dataset's classes using random histograms.
-    Assumes that the dataset activations are cached.
-
-    Args:
-        dataset: The dataset to classify.
-        class_names_to_features_dict: A dictionary mapping class names to their feature indices.
-        sample_size_portion: The portion of the sequence to sample for the creation of the histogram (between 0 and 1).
-        sae: The SAE model
-        k: top k used to build histogram
-        private: Whether to use differential privacy.
-        epsilon: Privacy budget for differential privacy.
-        downsample_class_size: Whether to downsample class size to 10k for faster experiments
-
-    Returns:
-        top1_acc, top3_acc
-    """
-    assert 0 < sample_size_portion <= 1, "sample_size_portion must be between 0 and 1"
-    num_classes, _, _ = get_dataset_metadata(dataset)
-    class_names = get_dataset_class_names(dataset)
-    lines = []
-    
-    top1_correct = 0
-    top3_correct = 0
-    for class_idx in range(num_classes):
-       
-        # create hisogram
-        path = f"checkpoints/gemma-2-2b_layer_24/{dataset}/class_{class_idx}/activations.pt"
-        activations = torch.load(path)  # [class_size, seq_len, d_model]
-        class_size = activations.size(0)
-        
-        # downsaple class size to 10k so experiments are faster
-        if downsample_class_size:
-            if class_size > 10000:
-                activations = activations[:10000, :, :]  # downsample class size to 10k
-
-        sample_size = int(activations.size(1) * sample_size_portion)
-        histograms = create_histograms(activations, 
-                                      sae, 
-                                      ks=[k], 
-                                      random=True, 
-                                      sample_size=sample_size)
-        histogram = histograms[k]
-        print(f"Created random histogram instance for class {class_names[class_idx]}", file=sys.stderr)
-        
-        # classify it
-        ranked_classes, frequencies = rank_concepts(class_names, 
-                                                    class_names_to_features_dict, 
-                                                    histogram, 
-                                                    private=private,
-                                                    epsilon=epsilon,
-                                                    k=k,
-                                                    num_tokens_in_sequence=sample_size)
-        
-        # update scores
-        if class_names[class_idx] == ranked_classes[0]:
-            top1_correct += 1
-        if class_names[class_idx] in ranked_classes[:3]:
-            top3_correct += 1
-
-        # write ranking
-        lines.append(f"Ranking of concepts for class {class_names[class_idx]}:\n")
-        j = 1
-        for concept, freq in zip(ranked_classes, frequencies):
-            lines.append(f"{j}.{concept}: {freq.item()} ({(freq.item() / (class_size * sample_size * k) ) * 100:.2f}%)\n")
-            j += 1
-        lines.append("\n")
-    
-    # save to file:
-    path = f"checkpoints/gemma-2-2b_layer_24/{dataset}"
-    filename = "concept_ranking_random" + get_file_suffix(k=k, private=private)
-    if private:
-        filename += f"_epsilon={epsilon}"
-    filename += ".txt"
-    with open(os.path.join(path, filename), "w") as f:
-        f.writelines(lines)
-    
-    top1_acc = top1_correct / num_classes
-    top3_acc = top3_correct / num_classes
-
-    print(f"saved class ranking to {os.path.join(path, filename)}", file=sys.stderr)
-    print(f"Top1 accuracy: {top1_acc}, Top3 accuracy: {top3_acc}", file=sys.stderr)
-    return top1_acc, top3_acc
 
 def dataset_classification(dataset,
                            class_names_to_features_dict, 
@@ -211,6 +140,7 @@ def dataset_classification(dataset,
                            layer=24,
                            private=True,
                            epsilon=0.5,
+                           use_idf_weights=True
                   ):
     """
     Classifies a dataset classes using SAE-Insights
@@ -235,19 +165,28 @@ def dataset_classification(dataset,
 
         num_tokens_in_class = class_to_size[i] * num_tokens_in_sequence
 
-        # load histogram
+        # load 
         dir_path = os.path.join("checkpoints", f"gemma-2-2b_layer_{layer}", dataset,  f"class_{i}")
         filename = "histogram" + get_file_suffix(k=k) + ".pt"
-        histogram = torch.load(os.path.join(dir_path, filename)).to('cuda')  # [d_sae]
+        histogram = torch.load(os.path.join(dir_path, filename), weights_only=True).to('cuda')  # [d_sae]
+        dir_path = os.path.join("checkpoints", f"gemma-2-2b_layer_{layer}", "general_histograms")
+        filename = "histogram" + get_file_suffix(k=k, dataset="OpenWebText", num_tokens=131072000) + ".pt"
+        general_histogram = torch.load(os.path.join(dir_path, filename), weights_only=True).to('cuda')  # [d_sae]
+        max_count = 131072000  # maximum possible count of a feature in the general histogram (num_tokens in general corpus)
         
         # Create ranking
         ranked_concepts, frequencies = rank_concepts(class_names, 
                                                      class_names_to_features_dict, 
-                                                     histogram, 
-                                                     private=private, 
-                                                     epsilon=epsilon, 
-                                                     k=k, 
-                                                     num_tokens_in_sequence=num_tokens_in_sequence)
+                                                     histogram,
+                                                     num_tokens_in_class, # max possible count of a feature in the histogram
+                                                     general_histogram,
+                                                     max_count,
+                                                     private=private,
+                                                     epsilon=epsilon,
+                                                     k=k,
+                                                     num_tokens_in_sequence=num_tokens_in_sequence,
+                                                     use_idf_weights=use_idf_weights
+                                                     )
         
         # update scores:
         if class_names[i] == ranked_concepts[0]:
@@ -259,12 +198,12 @@ def dataset_classification(dataset,
         lines.append(f"Ranking of concepts for class {class_names[i]}:\n")
         j = 1
         for concept, frequency in zip(ranked_concepts, frequencies):
-            lines.append(f"{j}.{concept}: {frequency.item()} ({(frequency.item() / (num_tokens_in_class * k) ) * 100:.2f}%)\n")
+            lines.append(f"{j}.{concept}: {frequency.item():.4f}\n")
             j += 1
         lines.append("\n")
     
     # save to file
-    filename = "concept_ranking" + get_file_suffix(k=k, private=private)
+    filename = "concept_ranking" + get_file_suffix(k=k, private=private, TFIDF=use_idf_weights)
     if private:
         filename += f"_epsilon={epsilon}"
     filename += ".txt"
@@ -278,15 +217,16 @@ def dataset_classification(dataset,
 
 def create_histograms_for_dataset(dataset, ks=[3], layer=24):
     """
-    Create histograms of feature counts for every class in dataset
-    For every token in the class it logs its top k features in a histogram
-    Histograms are saved to file
+    Create histograms of feature counts of all classes in dataset.
+    
+    for every token in the class it logs its top k features in a histogram
+
     Assumes there is activations.pt file in the class directory
     
     Args:
-    - dataset: The dataset to create histograms for
-    - ks: The list of top k values to consider for histograms
-    - layer: the layer the activations are taken from
+        dataset: The dataset to create histograms for
+        ks: The list of top k values to consider for histograms
+        layer: the layer the activations are taken from
 
     Returns:
         None; saves histogram to file
@@ -327,16 +267,18 @@ def make_private_histogram(histogram, epsilon, sensitivity):
     histogram += noise
 
 def run_experiment_loop(dataset, 
-                        epsilons, 
-                        wandb_project=WANDB_DEFAULT_PROJECT, 
+                        epsilons,
+                        use_idf_weights=True, 
+                        wandb_project=WANDB_DEFAULT_PROJECT,
+                        run_name="sae_insights",
                         num_repetitions=100):
     config = {
         "k": "3",
         "layer": 24,
         "num_of_repetitions": num_repetitions
     }
-    run = init_wandb(wandb_project, "sae_insights", config)
-    
+    run = init_wandb(wandb_project, run_name, config)
+
     class_names = get_dataset_class_names(dataset)
     class_names_to_features_dict = create_concept_to_features_dict(class_names)
 
@@ -348,7 +290,8 @@ def run_experiment_loop(dataset,
                                             class_names_to_features_dict,
                                             k=3,
                                             private=True,
-                                            epsilon=epsilon
+                                            epsilon=epsilon,
+                                            use_idf_weights=use_idf_weights
                                             )
             top1_acc_results_dict[str(epsilon)].append(top1_acc)
             top3_acc_results_dict[str(epsilon)].append(top3_acc)
@@ -372,64 +315,11 @@ def run_experiment_loop(dataset,
 
     print("Finished running regular experiments", file=sys.stderr)
 
-def run_experiment_loop_random_SI(dataset, 
-                        epsilons, 
-                        wandb_project=WANDB_DEFAULT_PROJECT, 
-                        num_repetitions=100, 
-                        sample_size_portion=0.5,
-                        config={}):
-    config["k"] = 3; config["layer"] = 24
-    config["num_of_repetitions"] = num_repetitions
-    config["sample_size_portion"] = sample_size_portion
-    
-    run = init_wandb(wandb_project, "sae_insights_random", config)
 
-    # load sae
-    sae_release = "gemma-scope-2b-pt-res-canonical"
-    sae_id = f"layer_{24}/width_16k/canonical" 
-    sae = SAE.from_pretrained(sae_release, sae_id, device="cuda")[0]
-
-    # load concepts to features dict
-    class_names = get_dataset_class_names(dataset)
-    class_names_to_features_dict = create_concept_to_features_dict(class_names)
-
-    # start experiments
-    top1_acc_results_dict = defaultdict(list)
-    top3_acc_results_dict = defaultdict(list)
-    for _ in range(num_repetitions):
-        for epsilon in epsilons:
-            top1_acc, top3_acc = dataset_classification_random(dataset,
-                                            class_names_to_features_dict,
-                                            sample_size_portion=sample_size_portion,
-                                            sae=sae,
-                                            k=3,
-                                            private=True,
-                                            epsilon=epsilon,
-                                            downsample_class_size=True
-                                            )
-            top1_acc_results_dict[str(epsilon)].append(top1_acc)
-            top3_acc_results_dict[str(epsilon)].append(top3_acc)
-
-    # compute results
-    for epsilon in epsilons:
-        top1_results = torch.tensor(top1_acc_results_dict[str(epsilon)])
-        top3_results = torch.tensor(top3_acc_results_dict[str(epsilon)])
-        top1_mean = top1_results.mean().item()
-        top1_std = top1_results.std().item()
-        top3_mean = top3_results.mean().item()
-        top3_std = top3_results.std().item()
-
-        run.log({
-            "top1_acc": top1_mean,
-            "top3_acc": top3_mean,
-            "top1_acc_std": top1_std,
-            "top3_acc_std": top3_std,
-            "epsilon": epsilon
-        })
-
-    print("finish running random SI experiments", file=sys.stderr)
-
-def run_non_private_baseline(dataset, wandb_project=WANDB_DEFAULT_PROJECT):
+def run_non_private_baseline(dataset,
+                             use_idf_weights=True, 
+                             wandb_project=WANDB_DEFAULT_PROJECT, 
+                             run_name="sae_insights_non_private"):
     """
     Runs the concept ranking experiment for dataset classes without privacy.
     """
@@ -437,8 +327,8 @@ def run_non_private_baseline(dataset, wandb_project=WANDB_DEFAULT_PROJECT):
         "k": 3,
         "layer": 24
     }
-    run = wandb.init(project=wandb_project, name="sae_insights_non_private", config=config, reinit="finish_previous")
-    
+    run = wandb.init(project=wandb_project, name=run_name, config=config, reinit="finish_previous")
+
     class_names = get_dataset_class_names(dataset)
     class_name_to_features_dict = create_concept_to_features_dict(class_names)
     
@@ -446,7 +336,8 @@ def run_non_private_baseline(dataset, wandb_project=WANDB_DEFAULT_PROJECT):
                                                 class_name_to_features_dict,
                                                 k=3,
                                                 layer=24,
-                                                private=False
+                                                private=False,
+                                                use_idf_weights=use_idf_weights
                                                 )
     
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
