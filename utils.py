@@ -1,5 +1,6 @@
 import sys
 import wandb
+import torch
 # Global variables
 DBPEDIA_CLASS_NAMES=[
     "Company",
@@ -197,3 +198,15 @@ def init_wandb(project, name, config):
     run.define_metric("top1_acc_std", step_metric="epsilon")
     run.define_metric("top3_acc_std", step_metric="epsilon")
     return run
+
+def get_default_privacy_config():
+    return {
+        "enabled": True,
+        "input_epsilon": 0.1,
+        "sensitivity": 0,
+        "use_shuffled_DP": True,
+        "use_sensitivity": False
+    }
+
+input_epsilon_for_histogram_when_sensitivity_is_not_used = torch.arange(3, 27, 2.5).tolist()
+input_epsilon_for_mean = torch.arange(0.5, 5.5, 0.2).tolist()

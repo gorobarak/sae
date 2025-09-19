@@ -5,9 +5,10 @@ from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 import os
 import sys
-from utils import  WANDB_DEFAULT_PROJECT, class_idx_to_class_name, get_file_suffix, prepare_batch_texts, get_dataset_metadata, get_label_column, get_dataset_class_names
+from utils import  WANDB_DEFAULT_PROJECT, init_wandb, get_file_suffix, prepare_batch_texts, get_dataset_metadata, get_label_column, get_dataset_class_names, get_default_privacy_config
 from collections import defaultdict
 import wandb
+from ShuffleDPNoise import ShuffledDPMeanSanitizer
 
 
 
@@ -83,8 +84,7 @@ def create_representations_for_classes(dataset_name):
 
 def dataset_classification(dataset,
                     model,
-                    private=True,
-                    epsilon=0.1
+                    privacy_config,
                     ):
     device = model.device
     lines = []
@@ -95,15 +95,19 @@ def dataset_classification(dataset,
     top_3_correct = 0
     for i in range(num_classes):
         dir_path = os.path.join("checkpoints", "dense_representation", dataset, f"class_{i}")
-        file_name = "dense_representation.pt"
-        dense_representation = torch.load(os.path.join(dir_path, file_name))  # [d_model]
-        dense_representation = dense_representation.to(device)
+        file_name = "all_representations.pt"
+        representations = torch.load(os.path.join(dir_path, file_name))  # [class_size, d_model]
+        representations = representations.to(device)
 
-        if private:
-           make_private_embedding(dense_representation, 
-                                  sensitivity=(dense_representation.size(0)/class_to_size[i]), 
-                                  epsilon=epsilon)
-        
+        output_epsilon = None
+        dense_representation = None
+        if privacy_config["enabled"]:
+           privacy_config["sensitivity"] = representations.size(0)/class_to_size[i]
+           noisy_representation, output_epsilon = make_private_mean(representations, privacy_config)
+           dense_representation = noisy_representation
+        else:
+            dense_representation = torch.mean(representations, dim=0) # [d_model]
+
         # Classify dense representation 
         ranked_classes, scores = rank_concepts(class_names, dense_representation, model)
 
@@ -112,7 +116,6 @@ def dataset_classification(dataset,
             top_1_correct += 1
         if class_names[i] in ranked_classes[:3]:
             top_3_correct += 1
-
 
         # write ranking
         lines.append(f"Ranking of concepts for class {class_names[i]}:\n")
@@ -123,9 +126,9 @@ def dataset_classification(dataset,
         lines.append("\n")
     
     # save to file
-    suffix = get_file_suffix(private=private)
-    if private:
-        suffix += f"_epsilon={epsilon}"
+    suffix = get_file_suffix(private=privacy_config["enabled"])
+    if privacy_config["enabled"]:
+        suffix += f"_epsilon={output_epsilon}"
     filename = "concept_ranking" + suffix + ".txt"
     dir_path = f"checkpoints/dense_representation/{dataset}"
     os.makedirs(dir_path, exist_ok=True)
@@ -137,7 +140,7 @@ def dataset_classification(dataset,
     top_1_acc = top_1_correct / num_classes
     top_3_acc = top_3_correct / num_classes
     print(f"Top-1 accuracy: {top_1_acc:.3f}, Top-3 accuracy: {top_3_acc:.3f}", file=sys.stderr)
-    return top_1_acc, top_3_acc
+    return top_1_acc, top_3_acc, output_epsilon
 
 def rank_concepts(concepts, dense_representation, model):
     concept_scores = []
@@ -155,20 +158,28 @@ def rank_concepts(concepts, dense_representation, model):
     return sorted_concepts, sorted_scores
 
 
-def make_private_embedding(embedding_vec, sensitivity, epsilon):
-    """
-    add laplace noise to each coordinate
-    """ 
-    scale = sensitivity / epsilon
-    laplace_dist = distributions.Laplace(loc=0, scale=scale)
-    noise = laplace_dist.sample(embedding_vec.shape)
-    noise = noise.to(embedding_vec.device)
-    embedding_vec += noise
+def make_private_mean(representations, privacy_config): 
+    
+    noisy_representation, output_epsilon = None, None
+    
+    if privacy_config["use_shuffled_DP"]:
+        shuffled_dp_sanitizer = ShuffledDPMeanSanitizer(representations)
+        noisy_representation, output_epsilon = shuffled_dp_sanitizer.sanitize(privacy_config["input_epsilon"])
+    
+    else: # Central DP with Laplace noise
+        mean_representation = torch.mean(representations, dim=0) # [d_model]
+        scale = privacy_config["sensitivity"] / privacy_config["input_epsilon"]
+        laplace_dist = distributions.Laplace(loc=0, scale=scale)
+        noise = laplace_dist.sample(mean_representation.shape).to(mean_representation.device)
+        noisy_representation = mean_representation + noise
+        output_epsilon = privacy_config["input_epsilon"]
 
+    return noisy_representation, output_epsilon
 
 def run_experiment_loop(dataset, 
-                        epsilons,  
-                        wandb_project=WANDB_DEFAULT_PROJECT, 
+                        epsilons,
+                        privacy_config,  
+                        wandb_project, 
                         num_repetitions=100):
     """
     Runs the concept ranking experiment for dataset classes multiple times and averages results.
@@ -180,23 +191,25 @@ def run_experiment_loop(dataset,
     config={
         "num_repetitions": num_repetitions,
         "model": "sentence-transformers/all-mpnet-base-v2",
+        "privacy_config": privacy_config
     }
-    run = wandb.init(project=wandb_project, name="dense_representation", config=config, reinit="finish_previous")
-    run.define_metric("top1_acc", step_metric="epsilon")
-    run.define_metric("top3_acc", step_metric="epsilon")
-    run.define_metric("top1_acc_std", step_metric="epsilon")
-    run.define_metric("top3_acc_std", step_metric="epsilon")
+    run = init_wandb(wandb_project, 
+                     "dense_representation" + get_file_suffix(DP=privacy_config["use_shuffled_DP"]),
+                     config)
     for _ in range(num_repetitions):
         for epsilon in epsilons:
-            top1_acc, top3_acc = dataset_classification(dataset, model, private=True, epsilon=epsilon)
-            top1_acc_results_dict[str(epsilon)].append(top1_acc)
-            top3_acc_results_dict[str(epsilon)].append(top3_acc)
+            privacy_config["input_epsilon"] = epsilon
+            top1_acc, top3_acc, output_epsilon = dataset_classification(dataset, 
+                                                                        model, 
+                                                                        privacy_config)
+            top1_acc_results_dict[str(output_epsilon)].append(top1_acc)
+            top3_acc_results_dict[str(output_epsilon)].append(top3_acc)
 
     
     # compute results
-    for epsilon in epsilons:
-        top1_acc_results = torch.tensor(top1_acc_results_dict[str(epsilon)])
-        top3_acc_results = torch.tensor(top3_acc_results_dict[str(epsilon)])
+    for output_epsilon_str in top1_acc_results_dict.keys():
+        top1_acc_results = torch.tensor(top1_acc_results_dict[output_epsilon_str])
+        top3_acc_results = torch.tensor(top3_acc_results_dict[output_epsilon_str])
         top1_acc_mean = top1_acc_results.mean().item()
         top1_acc_std = top1_acc_results.std().item()
         top3_acc_mean = top3_acc_results.mean().item()
@@ -206,7 +219,7 @@ def run_experiment_loop(dataset,
                    "top1_acc_std": top1_acc_std,
                    "top3_acc": top3_acc_mean,
                    "top3_acc_std": top3_acc_std,
-                   "epsilon": epsilon
+                   "epsilon": float(output_epsilon_str)
                    })
     print("Finished running experiments", file=sys.stderr)
 
@@ -220,8 +233,10 @@ def run_non_private_baseline(dataset,
     config = {
         "model": "sentence-transformers/all-mpnet-base-v2",
     }
+    dummy_privacy_config = get_default_privacy_config()
+    dummy_privacy_config["enabled"] = False
     run = wandb.init(project=wandb_project, name="dense_representation_non_private", config=config, reinit="finish_previous")
-    top1_acc, top3_acc = dataset_classification(dataset, model, private=False)
+    top1_acc, top3_acc, _ = dataset_classification(dataset, model, dummy_privacy_config)
     print(f"Non-private Top-1 accuracy: {top1_acc:.3f}, Top-3 accuracy: {top3_acc:.3f}", file=sys.stderr)
     run.log({"top1_acc": top1_acc, "top3_acc": top3_acc})
 

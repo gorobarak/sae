@@ -5,9 +5,10 @@ import torch
 import torch.distributions as distributions
 from collections import defaultdict
 from neuronpedia import get_concept_feature_indicies
-from utils import WANDB_DEFAULT_PROJECT, class_idx_to_class_name, get_file_suffix, get_dataset_metadata, get_dataset_class_names, init_wandb
+from utils import WANDB_DEFAULT_PROJECT, class_idx_to_class_name, get_default_privacy_config, get_file_suffix, get_dataset_metadata, get_dataset_class_names, init_wandb
 import wandb
 import sys
+from ShuffleDPNoise import ShuffledDPHistogramSanitizer
 
 
 
@@ -73,14 +74,11 @@ def create_histograms(activations_cache,
 
 def rank_concepts(concepts, 
                   concept_to_features_dict,  
+                  privacy_config,
                   histogram,
                   max_count,
                   general_histogram=None,
                   max_count_general=None,
-                  private=False, 
-                  epsilon=0.1, 
-                  k=3,
-                  num_tokens_in_sequence=128,
                   use_idf_weights=True):
     """
     Rank concepts based on their feature counts in the histogram
@@ -93,20 +91,27 @@ def rank_concepts(concepts,
         general_histogram: a histogram of feature counts over a general corpus
         max_count_general: the maximum possible count of a feature in the general histogram
         private: whether to make the histogram private
+        use_shuffled_DP: whether to use shuffled DP or centralized DP mechanism for privacy
         epsilon: privacy budget for differential privacy
         k: the top k used to construct the histogram
         num_tokens_in_sequence: number of tokens in a sequence
 
     Returns:
-        A tuple of (ranked_concepts, frequencies) where each is a list of length k
+        A tuple (ranked_concepts, frequencies, output_epsilon) 
+        ranked_concepts: list of concepts sorted by their frequency in the histogram
+        frequencies: tensor of concept frequencies sorted in descending order
+        output_epsilon: the privacy budget used (same as input epsilon for centralized DP)
 
     """
     histogram = histogram.float()
     general_histogram = general_histogram.float().to(histogram.device)  
-    
-    if private:
-        make_private_histogram(histogram, epsilon=epsilon, sensitivity=k*num_tokens_in_sequence)
-    
+
+    output_epsilon = privacy_config.get("input_epsilon", -1)
+    if privacy_config["enabled"]:
+        noisy_histogram, output_epsilon = make_private_histogram(histogram, privacy_config)
+        histogram = noisy_histogram
+        
+
     # prepare feature IDF weights
     if use_idf_weights:
         idf_weights = torch.log((max_count_general + 1) / (general_histogram + 1))  # [d_sae]
@@ -131,15 +136,14 @@ def rank_concepts(concepts,
     sorted_concepts = [concepts[i] for i in sorted_indices]
     sorted_frequencies = concept_frequencies[sorted_indices]
 
-    return sorted_concepts, sorted_frequencies
+    return sorted_concepts, sorted_frequencies, output_epsilon
 
 
 def dataset_classification(dataset,
                            class_names_to_features_dict, 
+                           privacy_config,
                            k=3, 
                            layer=24,
-                           private=True,
-                           epsilon=0.5,
                            use_idf_weights=True
                   ):
     """
@@ -151,14 +155,23 @@ def dataset_classification(dataset,
         k: the number of top k features used to construct the histograms
         layer: the layer the activations are taken from
         private: whether to use private histograms
+        use_shuffled_DP: whether to use shuffled DP or centralized DP mechanism for privacy
         epsilon: the privacy budget for private histograms
+        use_idf_weights: whether to use IDF weights when ranking concepts
+    
+    Returns:
+        A tuple (top1_acc, top3_acc, output_epsilon)
+        top1_acc: the top-1 accuracy of the classification
+        top3_acc: the top-3 accuracy of the classification
+        output_epsilon: the privacy budget used (same as input epsilon for centralized DP)
     """
     lines = []
     
     num_of_classes, class_to_size, _ = get_dataset_metadata(dataset)
     class_names = get_dataset_class_names(dataset)
-    num_tokens_in_sequence = 127
-    
+    num_tokens_in_sequence = 128
+    privacy_config["sensitivity"] = num_tokens_in_sequence * k  # each token contributes to k feature occurences in the histogram
+
     top1_correct = 0
     top3_correct = 0
     for i in range(num_of_classes):
@@ -175,16 +188,13 @@ def dataset_classification(dataset,
         max_count = 131072000  # maximum possible count of a feature in the general histogram (num_tokens in general corpus)
         
         # Create ranking
-        ranked_concepts, frequencies = rank_concepts(class_names, 
+        ranked_concepts, frequencies, output_epsilon = rank_concepts(class_names, 
                                                      class_names_to_features_dict, 
+                                                     privacy_config,
                                                      histogram,
                                                      num_tokens_in_class, # max possible count of a feature in the histogram
                                                      general_histogram,
                                                      max_count,
-                                                     private=private,
-                                                     epsilon=epsilon,
-                                                     k=k,
-                                                     num_tokens_in_sequence=num_tokens_in_sequence,
                                                      use_idf_weights=use_idf_weights
                                                      )
         
@@ -203,9 +213,9 @@ def dataset_classification(dataset,
         lines.append("\n")
     
     # save to file
-    filename = "concept_ranking" + get_file_suffix(k=k, private=private, TFIDF=use_idf_weights)
-    if private:
-        filename += f"_epsilon={epsilon}"
+    filename = "concept_ranking" + get_file_suffix(k=k, private=privacy_config["enabled"], TFIDF=use_idf_weights)
+    if privacy_config["enabled"]:
+        filename += f"_epsilon={output_epsilon:.2f}"
     filename += ".txt"
     with open(os.path.join("checkpoints", "gemma-2-2b_layer_24", dataset, filename), "w") as f:
         f.writelines(lines)
@@ -213,7 +223,7 @@ def dataset_classification(dataset,
     print(f"Saved {os.path.join('checkpoints', f"gemma-2-2b_layer_{layer}", dataset, filename)}", file=sys.stderr)
     print(f"Top1 accuracy: {top1_correct / num_of_classes}, Top3 accuracy: {top3_correct / num_of_classes}", file=sys.stderr)
 
-    return (top1_correct / num_of_classes), (top3_correct / num_of_classes)
+    return (top1_correct / num_of_classes), (top3_correct / num_of_classes), output_epsilon
 
 def create_histograms_for_dataset(dataset, ks=[3], layer=24):
     """
@@ -259,23 +269,37 @@ def create_histograms_for_dataset(dataset, ks=[3], layer=24):
             torch.save(histogram, os.path.join(dir_path, filename))
             print(f"Histogram saved to {os.path.join(dir_path, filename)}", file=sys.stderr)
  
-def make_private_histogram(histogram, epsilon, sensitivity):
-    scale = sensitivity / epsilon
-    laplace = distributions.Laplace(loc=0, scale=scale)
-    noise = laplace.sample(histogram.shape)
-    noise = noise.to(histogram.device)
-    histogram += noise
+def make_private_histogram(histogram, privacy_config):
+    if privacy_config["use_shuffled_DP"]:
+        shuffled_dp_sanitizer = ShuffledDPHistogramSanitizer()
+        noisy_histogram, output_epsilon = shuffled_dp_sanitizer.sanitize(histogram,
+                                                                         n=-1,  # Not used in the current implementation
+                                                                         k=privacy_config["sensitivity"],
+                                                                         epsilon=privacy_config["input_epsilon"],
+                                                                         use_sparsity=privacy_config["use_sensitivity"],)
+    else:
+        scale = privacy_config["sensitivity"] / privacy_config["input_epsilon"]
+        laplace = distributions.Laplace(loc=0, scale=scale)
+        noise = laplace.sample(histogram.shape)
+        noise = noise.to(histogram.device)
+        noisy_histogram = histogram + noise
+        output_epsilon = privacy_config["input_epsilon"]
 
-def run_experiment_loop(dataset, 
+    return noisy_histogram, output_epsilon
+
+def run_experiment_loop(dataset,
                         epsilons,
+                        privacy_config,
+                        wandb_project,
+                        run_name,
                         use_idf_weights=True, 
-                        wandb_project=WANDB_DEFAULT_PROJECT,
-                        run_name="sae_insights",
-                        num_repetitions=100):
+                        num_repetitions=200):
     config = {
         "k": "3",
         "layer": 24,
-        "num_of_repetitions": num_repetitions
+        "num_of_repetitions": num_repetitions,
+        "privacy_config": privacy_config,
+        "use_idf_weights": use_idf_weights
     }
     run = init_wandb(wandb_project, run_name, config)
 
@@ -286,20 +310,20 @@ def run_experiment_loop(dataset,
     top3_acc_results_dict = defaultdict(list)
     for _ in range(num_repetitions):
         for epsilon in epsilons:
-            top1_acc, top3_acc = dataset_classification(dataset,
+            privacy_config["input_epsilon"] = epsilon
+            top1_acc, top3_acc, output_epsilon = dataset_classification(dataset,
                                             class_names_to_features_dict,
+                                            privacy_config,
                                             k=3,
-                                            private=True,
-                                            epsilon=epsilon,
                                             use_idf_weights=use_idf_weights
                                             )
-            top1_acc_results_dict[str(epsilon)].append(top1_acc)
-            top3_acc_results_dict[str(epsilon)].append(top3_acc)
-    
+            top1_acc_results_dict[str(output_epsilon)].append(top1_acc)
+            top3_acc_results_dict[str(output_epsilon)].append(top3_acc)
+
     # compute results
-    for epsilon in epsilons:
-        top1_acc_results = torch.tensor(top1_acc_results_dict[str(epsilon)])
-        top3_acc_results = torch.tensor(top3_acc_results_dict[str(epsilon)])
+    for output_epsilon_str in top1_acc_results_dict.keys():
+        top1_acc_results = torch.tensor(top1_acc_results_dict[output_epsilon_str])
+        top3_acc_results = torch.tensor(top3_acc_results_dict[output_epsilon_str])
         top1_acc_mean = top1_acc_results.mean().item()
         top1_acc_std = top1_acc_results.std().item()
         top3_acc_mean = top3_acc_results.mean().item()
@@ -310,7 +334,7 @@ def run_experiment_loop(dataset,
             "top3_acc": top3_acc_mean,
             "top1_acc_std": top1_acc_std,
             "top3_acc_std": top3_acc_std,
-            "epsilon": epsilon
+            "epsilon": float(output_epsilon_str)
         })
 
     print("Finished running regular experiments", file=sys.stderr)
@@ -325,18 +349,20 @@ def run_non_private_baseline(dataset,
     """
     config = {
         "k": 3,
-        "layer": 24
+        "layer": 24,
+        "use_idf_weights": use_idf_weights,
     }
     run = wandb.init(project=wandb_project, name=run_name, config=config, reinit="finish_previous")
 
     class_names = get_dataset_class_names(dataset)
     class_name_to_features_dict = create_concept_to_features_dict(class_names)
-    
-    top1_acc, top3_acc = dataset_classification(dataset,
+    privacy_config = get_default_privacy_config()
+    privacy_config["enabled"] = False  # non-private
+    top1_acc, top3_acc, _ = dataset_classification(dataset,
                                                 class_name_to_features_dict,
+                                                privacy_config,
                                                 k=3,
                                                 layer=24,
-                                                private=False,
                                                 use_idf_weights=use_idf_weights
                                                 )
     

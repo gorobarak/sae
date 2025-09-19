@@ -37,8 +37,8 @@ class ShuffledDPSanitizer:
     except:
       negbin_param_p = 0
     # Using numpy for negative binomial distribution since it isn't clear how pytorch parameterized it...
-    negbin_sample1 = torch.from_numpy(np.random.negative_binomial(negbin_param_r, negbin_param_p, num_counters))
-    negbin_sample2 = torch.from_numpy(np.random.negative_binomial(negbin_param_r, negbin_param_p, num_counters))
+    negbin_sample1 = torch.from_numpy(np.random.negative_binomial(negbin_param_r, negbin_param_p, num_counters)).to(counter_array.device)
+    negbin_sample2 = torch.from_numpy(np.random.negative_binomial(negbin_param_r, negbin_param_p, num_counters)).to(counter_array.device)
     noisy_counter_array = counter_array + negbin_sample1 - negbin_sample2
 
     return noisy_counter_array,output_epsilon
@@ -72,7 +72,7 @@ class ShuffledDPMeanSanitizer:
     self.n = dataset.size(0)
     self.d = dataset.size(1)
 
-    rr_mask = torch.rand(dataset.size())
+    rr_mask = torch.rand(dataset.size(), device=dataset.device)
     rr_dataset = 0.5 * dataset + 0.5
     rr_dataset[rr_mask > rr_dataset] = 0
     rr_dataset[rr_mask <= rr_dataset] = 1
