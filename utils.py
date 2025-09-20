@@ -209,4 +209,4 @@ def get_default_privacy_config():
     }
 
 input_epsilon_for_histogram_when_sensitivity_is_not_used = torch.arange(3, 27, 2.5).tolist()
-input_epsilon_for_mean = torch.arange(0.5, 5.5, 0.2).tolist()
+input_epsilon_for_shuffled_DP_mean = torch.arange(0.5, 5.5, 0.3).tolist()

@@ -102,7 +102,7 @@ def dataset_classification(dataset,
         output_epsilon = None
         dense_representation = None
         if privacy_config["enabled"]:
-           privacy_config["sensitivity"] = representations.size(0)/class_to_size[i]
+           privacy_config["sensitivity"] = representations.size(1) / representations.size(0)  # dim / n
            noisy_representation, output_epsilon = make_private_mean(representations, privacy_config)
            dense_representation = noisy_representation
         else:
