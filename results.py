@@ -1,11 +1,13 @@
 #%%
 import os
 os.environ["HF_HOME"] = "/home/yandex/APDL2425a/group_12/gorodissky/.cache/huggingface"
-from cv2 import line
+from pytest import mark
 import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 import wandb
+import numpy as np
+
 
 # %%
 ### Central DP comprarison
@@ -318,11 +320,34 @@ for i, dataset_name in enumerate(datasets):
     axes[2*i+1].set_ylabel("Top-3 Accuracy")
     axes[2*i+1].set_title(title)
     axes[2*i+1].grid()
-fig.suptitle("Shuffled and Central DP comparison")
+fig.suptitle("Shuffled VS Central DP SAE Insights")
 fig.legend(handles=[line_sae_shuffled_DP, line_sae_central, line_dense_shuffled_DP, line_dense_central], 
            loc="lower center", 
            ncols=4,
            bbox_to_anchor=(0.5, -0.02))
 fig.tight_layout(rect=(0, 0.005, 1, 1))
 # %%
-# Shuffled DP and central DP comparison:
+# General histogram visualization
+general_histogram = torch.load("checkpoints/gemma-2-2b_layer_24/general_histograms/histogram_k=3_dataset=OpenWebText_num_tokens=131072000.pt")
+plt.figure(figsize=(8, 5))
+# log_values_histogram = torch.log10(general_histogram + 1)
+plt.boxplot(general_histogram, 
+            vert=False, 
+            patch_artist=True,
+            boxprops=dict(facecolor="skyblue", color="navy"),
+            whiskerprops=dict(color="black"),
+            medianprops=dict(color="red"),
+            flierprops=dict(marker='o', markerfacecolor='orange', markersize=5))
+p99 = np.percentile(general_histogram.numpy(), 99)
+# plt.axvline(p99, color='green', linestyle='--', label='99th Percentile')
+plt.plot(p99, 1, marker="D", color="green", markersize=10, label='99th Percentile')
+plt.xscale("log")
+plt.xlabel("feature frequency (log scale)")
+plt.suptitle("Histogram of Feature Frequencies")
+plt.title("k=3, dataset=OpenWebText, num_tokens=131072000, model=gemma-2-2b, layer=24")
+plt.grid(axis='x', linestyle='--', alpha=0.7)
+plt.legend()
+plt.tight_layout()
+
+# %%
+# %%

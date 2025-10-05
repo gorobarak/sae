@@ -1,14 +1,14 @@
+from sae_insights import dataset_classification, create_concept_to_features_dict
 from utils import get_dataset_class_names, get_default_privacy_config
-from dense_representation import run_experiment_loop
-datasets = ["yahoo_questions", "yahoo_answers", "ag_news", "dbpedia"]
-privacy_config = get_default_privacy_config()
-privacy_config["use_shuffled_DP"] = False
-privacy_config["enabled"] = True
-num_reps = 200
-for dataset in datasets:
-    run_experiment_loop(dataset, 
-                        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-                        privacy_config,
-                        wandb_project=dataset+"_classification",
-                        num_repetitions=num_reps)
 
+datasets = ["yahoo_answers", "yahoo_questions", "dbpedia", "ag_news"]
+privacy_config = get_default_privacy_config()
+privacy_config["enabled"] = False
+for dataset in datasets:
+    class_names = get_dataset_class_names(dataset)
+    class_names_to_features = create_concept_to_features_dict(class_names)
+    dataset_classification(
+        dataset,
+        class_names_to_features,
+        privacy_config,
+    )

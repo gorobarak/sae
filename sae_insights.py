@@ -105,7 +105,8 @@ def rank_concepts(concepts,
     """
     histogram = histogram.float()
     general_histogram = general_histogram.float().to(histogram.device)  
-
+    p99 = torch.quantile(general_histogram, 0.99).item()
+    most_common_indices = torch.nonzero(general_histogram[general_histogram > p99], as_tuple=True)[0]
     output_epsilon = privacy_config.get("input_epsilon", -1)
     if privacy_config["enabled"]:
         noisy_histogram, output_epsilon = make_private_histogram(histogram, privacy_config)
@@ -121,7 +122,7 @@ def rank_concepts(concepts,
     for concept in concepts:
         
         feature_indices = concept_to_features_dict[concept]
-        feature_frequencies = histogram[feature_indices] / max_count
+        feature_frequencies = histogram[feature_indices] / max_count  # normalize to [0, 1]
 
         if use_idf_weights:
             feature_idf_weights = idf_weights[feature_indices]
@@ -152,11 +153,10 @@ def dataset_classification(dataset,
 
     Args:
         dataset: The dataset to classify
+        class_names_to_features_dict: dict mapping class names to their feature indices
+        privacy_config: dict containing privacy configuration
         k: the number of top k features used to construct the histograms
         layer: the layer the activations are taken from
-        private: whether to use private histograms
-        use_shuffled_DP: whether to use shuffled DP or centralized DP mechanism for privacy
-        epsilon: the privacy budget for private histograms
         use_idf_weights: whether to use IDF weights when ranking concepts
     
     Returns:
