@@ -18,3 +18,8 @@ W_enc_gemma-scope-2b-pt-res-canonical_layer_24_width_16k_canonical.pt
 tokens/
 glove50emb.npy
 glove50embwords.txt
+data/
+.ipynb_checkpoints/
+*.sh
+*.log
+main.py
