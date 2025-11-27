@@ -14,155 +14,13 @@ from transformers import AutoTokenizer, DataCollatorWithPadding, AutoConfig
 
 
 code_words = ["def", "class", "import", "return", "lambda", 
-              "async", "await", "try", "except", "for", "while", 
-              "func", "var", "let", "const", "null", "true", "false", 
-              "struct", "enum", "include", "template"]
-
-def create_dataset_tokens_mass(
-        model: HookedRootModule,
-        tokenizer: AutoTokenizer,
-        dataset_name: str,
-        tokens_ids: list[int],
-        dataset_size: int = int(1e4)
-        ):
-    """
-    Creates tensors X: [dataset_size, hidden_dim] of last activation for every layer and Y: [dataset_size] of -log token mass for given token ids.
-    Assumes dataset has "input_ids" key which is tokenized input in chat format, and that input_ids are bounded by some L_max.
-    """
-    model = model.to("cuda")
-
-    batch_size = 32
-    num_iterations = dataset_size // batch_size
-    
-    L_max = 256
-    
-    hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)] # all layer resuidual stream
-    
-    hf_model_name = get_official_model_name(model.cfg.model_name)
-    dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
-    dataset = dataset.shuffle(seed=42)
-    tokenizer.padding_side = "left" # so the last act corresponds to the last token
-    if not tokenizer.pad_token:
-        tokenizer.pad_token = tokenizer.eos_token # doen't matter what we pad with since we will mask it out
-    collator = DataCollatorWithPadding(tokenizer=tokenizer, padding='longest') # collate examples to batch by padding to longest in batch
-    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
-    data_loader_iter = iter(dataloader)
-    
-    mlog_tokens_mass_list = []
-    acts_list_per_layer = defaultdict(list)
-    for i in range(num_iterations):
-        encoded_batch = next(data_loader_iter)
-        tokens = encoded_batch.input_ids.to("cuda")  # [batch, seq_len]
-        att_mask = encoded_batch.attention_mask.to("cuda")  # [batch, seq_len]
-        with torch.no_grad():
-            logits, cache = model.run_with_cache(
-                tokens,
-                names_filter=hookpoints,
-                attention_mask=att_mask
-            )
-        
-        # record last acts
-        for hookpoint in hookpoints:
-            acts = cache[hookpoint]  # [batch, seq_len, d_model]
-            acts_list_per_layer[hookpoint].append(acts[:, -1, :].cpu())  # [batch, d_model]
-
-        # record token mass for target tokens
-        last_logits = logits[:, -1, :]  # [batch, vocab_size]
-        probs = torch.nn.functional.softmax(last_logits, dim=-1)  # [batch, vocab_size]
-        tokens_mass = probs[:, tokens_ids].sum(dim=-1) # [batch]
-        mlog_tokens_mass = -torch.log(tokens_mass + 1e-10)  # [batch]
-        mlog_tokens_mass_list.append(mlog_tokens_mass.cpu())
-
-
-        print(f"Processed batch {i+1}/{num_iterations}", file=sys.stderr)
-    
-    Xs = []
-    for hookpoint in hookpoints:
-        acts_list = acts_list_per_layer[hookpoint]
-        X = torch.cat(acts_list, dim=0)  # [dataset_size, hidden_dim]
-        Xs.append(X)
-
-    Y = torch.cat(mlog_tokens_mass_list, dim=0)  # [dataset_size]
-    
-    return Xs, Y
-
-
+              "async", "await","func", "var", "let", "const", "null", 
+              "struct", "enum", "include", "template", "typename"]
 
 def fit_ridge_regression(X: torch.Tensor, Y: torch.Tensor):
     ridge = Ridge(alpha=1.0)
     ridge.fit(X, Y)
     return ridge
-
-
-def create_dataset_perplexity(
-        model: HookedRootModule,
-        tokenizer: AutoTokenizer,
-        dataset_name: str,
-        dataset_size: int = int(1e4)
-        ):
-    """
-    Creates a dataset for every layer of last activations Xs and perplexity Y.
-    Assumes dataset has "input_ids" key which is tokenized input in chat format.
-    """
-    model = model.to("cuda")
-    
-    batch_size = 32
-    num_iterations = dataset_size // batch_size
-    
-    L_max = 256
-    
-    hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)]
-    
-    hf_model_name = get_official_model_name(model.cfg.model_name)
-    dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
-    dataset = dataset.shuffle(seed=42)
-    tokenizer.padding_side = "left" # so the last act corresponds to the last token
-    if not tokenizer.pad_token:
-        tokenizer.pad_token = tokenizer.eos_token # doen't matter what we pad with since we will mask it out
-    collator = DataCollatorWithPadding(tokenizer=tokenizer, padding='longest') # collate examples to batch by padding to longest in batch
-    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
-    data_loader_iter = iter(dataloader)
-    
-    acts_list_per_layer = defaultdict(list)
-    perplexities_list = []
-    for i in range(num_iterations):
-        encoded_batch = next(data_loader_iter)
-        tokens = encoded_batch.input_ids.to("cuda")  # [batch, seq_len]
-        att_mask = encoded_batch.attention_mask.to("cuda")  # [batch, seq_len]
-        with torch.no_grad():
-            logits, cache = model.run_with_cache(tokens, 
-                                                 names_filter=hookpoints,
-                                                 attention_mask=att_mask)
-        
-        # record last acts
-        for hookpoint in cache.keys():
-            acts = cache[hookpoint]  # [batch, seq_len, d_model]
-            acts_list_per_layer[hookpoint].append(acts[:, -1, :].cpu())  # [batch, d_model]
-
-        # record perplexity
-        target_tokens = tokens.clone()[:, 1:] # [batch, seq_len - 1]
-        minus_log_probs = (-torch.nn.functional.log_softmax(logits, dim=-1))[:, :-1, :]  #  [batch, seq_len - 1, vocab_size]
-        target_log_probs = torch.gather(minus_log_probs,
-                                        dim=-1,
-                                        index=target_tokens.unsqueeze(-1)).squeeze(-1)  # [batch, seq_len - 1]
-        
-        att_mask = att_mask[:, :-1] # adjust attention mask on the tokens we measured log probs for [batch, seq_len - 1]
-        masked_target_log_probs = target_log_probs * att_mask # [batch, seq_len - 1], 
-        sums = masked_target_log_probs.sum(dim=-1)  # [batch]
-        counts  = att_mask.sum(dim=-1).clamp(min=1)  # [batch]
-        perplexity = torch.exp(sums / counts)  # [batch]
-        perplexities_list.append(perplexity.cpu())
-        
-        print(f"Processed batch {i+1}/{num_iterations}", file=sys.stderr)
-    
-    Xs = []
-    for hookpoint in hookpoints:
-        acts_list = acts_list_per_layer[hookpoint]
-        X = torch.cat(acts_list, dim=0).cpu()  # [dataset_size, hidden_dim]
-        Xs.append(X)
-    Y = torch.cat(perplexities_list, dim=0).cpu()  # [dataset_size]
-
-    return Xs, Y
 
 def eval(model_name, task, project_dim=None):
     path = f"data/{task}/{model_name}"
@@ -177,15 +35,6 @@ def eval(model_name, task, project_dim=None):
         
         if task == "pred_perplexity":
             Y = torch.log(Y + 1e-10)  # predict log perplexity to stabilize training
-
-        if task == "pred_tokens_mass":
-            cfg = AutoConfig.from_pretrained(get_official_model_name(model_name))
-            print("-log mass stats: mean ", torch.mean(Y).item(), " std ", torch.std(Y).item())
-            vocab_size = cfg.vocab_size
-            mass = torch.exp(-Y)
-            scaled_mass = mass * vocab_size
-            print("Scaled mass stats: mean ", torch.mean(scaled_mass).item(), " std ", torch.std(scaled_mass).item())
-            Y = scaled_mass
 
         if project_dim is not None:
             X = project(X, project_dim)
@@ -261,13 +110,6 @@ def eval_baseline(basline_model, llm_model_name: str , task, project_dim=None):
     if task == "pred_perplexity":
         Y = torch.log(Y + 1e-10)  # predict log perplexity to stabilize training
 
-    if task == "pred_tokens_mass":
-        cfg = AutoConfig.from_pretrained(get_official_model_name(llm_model_name))
-        vocab_size = cfg.vocab_size
-        mass = torch.exp(-Y)
-        scaled_mass = mass 
-        Y = scaled_mass
-
     if project_dim is not None:
         embeddings = project(embeddings, project_dim)
 
@@ -279,29 +121,37 @@ def eval_baseline(basline_model, llm_model_name: str , task, project_dim=None):
     r2_score = ridge.score(X_test, Y_test)
 
     return relative_error, r2_score
-
-
-def create_dataset_lengths(
+      
+def create_datasets(
         model: HookedRootModule,
-        model_name: str,
+        tl_model_name: str,
         tokenizer: AutoTokenizer,
         dataset_name: str,
-        dataset_size: int = 1000
-        ):
+        pooling_strategy: str = "last",
+        tokens_ids: list[int] = None,
+        dataset_size: int = int(1e4)):
     """
-    Creates a dataset for every layer of last activations Xs and perplexity Y.
-    Assumes dataset has "input_ids" key which is tokenized input in chat format.
+    Creates tensor X of residual stream activation for every layer using the pooling strategy pooling_strategy 
+    Creates dict of tensors Y with keys the different tasks
+        - "pred_perplexity": Y["pred_perplexity"] is perplexity tensor
+        - "pred_tokens_mass": Y["pred_tokens_mass"] is -log token mass tensor for given token ids
+        - "pred_lengths": Y["pred_lengths"] is response lengths tensor
+
+    Assumes dataset was preprocessed and has "input_ids" key which is tokenized input in chat format, and input_ids is bounded by some L_max.
+    Preprocessd dataset should be in data/preprocessed/{dataset_name}/{model_name}_L={L_max}
     """
+
     model = model.to("cuda")
-    
-    batch_size = 32
+
+    batch_size = 16
     num_iterations = dataset_size // batch_size
     
     L_max = 256
     
-    hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)]
+    hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)] # all layer resuidual stream
     
-    hf_model_name = get_official_model_name(model_name)
+    # load dataset
+    hf_model_name = get_official_model_name(tl_model_name)
     dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left" # so the last act corresponds to the last token
@@ -311,46 +161,100 @@ def create_dataset_lengths(
     dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
     data_loader_iter = iter(dataloader)
     
-    acts_list_per_layer = defaultdict(list)
-    lengths_list = []
+    Ys = defaultdict(list)
+    acts_per_layer = defaultdict(list)
     for i in range(num_iterations):
         encoded_batch = next(data_loader_iter)
         tokens = encoded_batch.input_ids.to("cuda")  # [batch, seq_len]
         att_mask = encoded_batch.attention_mask.to("cuda")  # [batch, seq_len]
         with torch.no_grad():
-            logits, cache = model.run_with_cache(tokens, 
-                                                 names_filter=hookpoints,
-                                                 attention_mask=att_mask)
+            logits, cache = model.run_with_cache(
+                tokens,
+                names_filter=hookpoints,
+                attention_mask=att_mask
+            )
         
-        # record last acts
-        for hookpoint in cache.keys():
-            acts = cache[hookpoint]  # [batch, seq_len, d_model]
-            acts_list_per_layer[hookpoint].append(acts[:, -1, :].cpu())  # [batch, d_model]
+        # record acts based on pooling strategy
+        for hookpoint in hookpoints:
+            acts = cache[hookpoint] # [batch, seq_len, d_model]
+            acts_to_save = pool_activations(acts, att_mask, pooling_strategy)  # [batch, d_model]
+            acts_per_layer[hookpoint].append(acts_to_save.cpu())  # [batch, d_model]
 
-        # record response lengths
-        query_length = tokens.shape[1] 
-        response = model.generate(tokens,
-                                  max_new_tokens=(model.cfg.n_ctx - query_length - 500),
-                                  verbose=False)
-        response_only = response[:, query_length:]  # [batch, gen_seq_len]
-        not_eos = (response_only != tokenizer.eos_token_id)
-        lengths = not_eos.sum(dim=-1) + 1  # +1 to account for eos token; [batch]
-        lengths_list.append(lengths.cpu())
-        
+        # record labels for different tasks
+        # perplexity
+        Y_mnll = record_nll(tokens, att_mask, logits)  # [batch]
+        Ys["pred_nll"].append(Y_mnll.cpu())
+        Y_tokens_mass = record_tokens_mass(logits, tokens_ids)  # [batch]
+        Ys["pred_tokens_mass"].append(Y_tokens_mass.cpu())
+        Y_lengths = record_length(tokens, model, tokenizer)  # [batch]
+        Ys["pred_length"].append(Y_lengths.cpu())
+
+
         print(f"Processed batch {i+1}/{num_iterations}", file=sys.stderr)
     
-    Xs = []
-    for hookpoint in hookpoints:
-        acts_list = acts_list_per_layer[hookpoint]
-        X = torch.cat(acts_list, dim=0).cpu()  # [dataset_size, hidden_dim]
-        Xs.append(X)
-    Y = torch.cat(lengths_list, dim=0).cpu()  # [dataset_size]
+    Xs_cat = {key: torch.cat(acts_per_layer[key], dim=0) for key in acts_per_layer.keys()} # [dataset_size, hidden_dim]
+    Ys_cat = {key: torch.cat(Ys[key], dim=0) for key in Ys.keys()} # [dataset_size]
+    
+    return Xs_cat, Ys_cat
 
-    return Xs, Y
-        
+def pool_activations(acts: torch.Tensor, att_mask: torch.Tensor, pooling_strategy: str) -> torch.Tensor:
+    """
+    Pools activations based on pooling_strategy.
+    acts: [batch, seq_len, d_model]
+    att_mask: [batch, seq_len]
+    pooling_strategy: "last", "mean", "max"
+    Returns: pooled_acts: [batch, d_model]
+    """
+    if pooling_strategy == "last":
+        # because we pad on the left, the last token is at the last position
+        pooled_acts = acts[:, -1, :]  # [batch, d_model]
+    elif pooling_strategy == "mean":
+        masked_acts = acts * att_mask.unsqueeze(-1) # [batch, seq_len, d_model]
+        sums = masked_acts.sum(dim=1) # sum over sequence dim [batch, d_model]
+        counts = att_mask.sum(dim=1, keepdim=True).clamp(min=1)  # [batch, 1]
+        pooled_acts = sums / counts  # [batch, d_model]
+    elif pooling_strategy == "max":
+        mask = att_mask.unsqueeze(-1).bool()  # [batch, seq_len, 1]
+        acts_masked = acts.float().masked_fill(~mask, float("-inf"))  # [batch, seq_len, d_model]
+        pooled_acts = torch.max(acts_masked, dim=1).values  # max over sequence dim [batch, d_model]
+    else:
+        raise ValueError(f"Unknown pooling strategy: {pooling_strategy}")
+    return pooled_acts
 
+def record_tokens_mass(logits: torch.Tensor, tokens_ids: list[int]) -> torch.Tensor:
+    last_logits = logits[:, -1, :]  # [batch, vocab_size]
+    probs = torch.nn.functional.softmax(last_logits, dim=-1)  # [batch, vocab_size]
+    tokens_mass = probs[:, tokens_ids].sum(dim=-1) # [batch]
+    mlog_mass = -torch.log(tokens_mass + 1e-10)  # [batch]
+    return mlog_mass
 
- 
+def record_nll(tokens: torch.Tensor, att_mask: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    # tragets are all tokens except first
+    target_tokens = tokens[:, 1:] # [batch, seq_len - 1]
+    
+    # we take log prob on all tokens except last
+    minus_log_probs = (-torch.nn.functional.log_softmax(logits, dim=-1))[:, :-1, :]  #  [batch, seq_len - 1, vocab_size] 
+    target_log_probs = torch.gather(minus_log_probs,
+                                    dim=-1,
+                                    index=target_tokens.unsqueeze(-1)).squeeze(-1)  # [batch, seq_len - 1]
+    
+    att_mask = att_mask[:, :-1] # adjust attention mask on the tokens we measured log probs for [batch, seq_len - 1]
+    masked_target_log_probs = target_log_probs * att_mask # [batch, seq_len - 1], 
+    sums = masked_target_log_probs.sum(dim=-1)  # [batch]
+    counts  = att_mask.sum(dim=-1).clamp(min=1)  # [batch]
+    mean_nll = sums / counts  # [batch]
+    return mean_nll
+
+def record_length(tokens: torch.Tensor, model: HookedRootModule, tokenizer: AutoTokenizer) -> torch.Tensor:
+    query_length = tokens.shape[1] 
+    response = model.generate(tokens,
+                                max_new_tokens=(model.cfg.n_ctx - query_length - 500),
+                                verbose=False)
+    response_only = response[:, query_length:]  # [batch, gen_seq_len]
+    not_eos = (response_only != tokenizer.eos_token_id)
+    lengths = not_eos.sum(dim=-1) + 1  # +1 to account for eos token; [batch]
+    return lengths
+
 def project(X: torch.Tensor, target_dim: int) -> torch.Tensor:
     """
     Projects X to target_dim using radnom gaussian matrix.
