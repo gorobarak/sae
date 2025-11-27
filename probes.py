@@ -1,6 +1,7 @@
 from collections import defaultdict
 import sys
 from transformer_lens.hook_points import HookedRootModule
+from transformer_lens.loading_from_pretrained import get_official_model_name
 from datasets import IterableDataset, Dataset, load_from_disk
 import torch
 from torch.utils.data import DataLoader
@@ -8,7 +9,7 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import train_test_split
 import os
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, DataCollatorWithPadding
+from transformers import AutoTokenizer, DataCollatorWithPadding, AutoConfig
 
 
 
@@ -19,7 +20,6 @@ code_words = ["def", "class", "import", "return", "lambda",
 
 def create_dataset_tokens_mass(
         model: HookedRootModule,
-        hf_model_name: str,
         tokenizer: AutoTokenizer,
         dataset_name: str,
         tokens_ids: list[int],
@@ -38,6 +38,7 @@ def create_dataset_tokens_mass(
     
     hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)] # all layer resuidual stream
     
+    hf_model_name = get_official_model_name(model.cfg.model_name)
     dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left" # so the last act corresponds to the last token
@@ -73,7 +74,7 @@ def create_dataset_tokens_mass(
         mlog_tokens_mass_list.append(mlog_tokens_mass.cpu())
 
 
-        print(f"Processed example {i+1}/{dataset_size}", file=sys.stderr)
+        print(f"Processed batch {i+1}/{num_iterations}", file=sys.stderr)
     
     Xs = []
     for hookpoint in hookpoints:
@@ -95,7 +96,6 @@ def fit_ridge_regression(X: torch.Tensor, Y: torch.Tensor):
 
 def create_dataset_perplexity(
         model: HookedRootModule,
-        hf_model_name: str,
         tokenizer: AutoTokenizer,
         dataset_name: str,
         dataset_size: int = int(1e4)
@@ -113,6 +113,7 @@ def create_dataset_perplexity(
     
     hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)]
     
+    hf_model_name = get_official_model_name(model.cfg.model_name)
     dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left" # so the last act corresponds to the last token
@@ -163,7 +164,7 @@ def create_dataset_perplexity(
 
     return Xs, Y
 
-def eval(model_name, task):
+def eval(model_name, task, project_dim=None):
     path = f"data/{task}/{model_name}"
     hookpoints = os.listdir(path)
     hookpoints = sorted(hookpoints, key=lambda x: int(x.split(".")[1]))
@@ -173,6 +174,21 @@ def eval(model_name, task):
     for hookpoint in hookpoints:
         X = torch.load(f"{path}/{hookpoint}/X.pt") # [dataset_size, hidden_dim]
         Y = torch.load(f"{path}/{hookpoint}/Y.pt") # [dataset_size]
+        
+        if task == "pred_perplexity":
+            Y = torch.log(Y + 1e-10)  # predict log perplexity to stabilize training
+
+        if task == "pred_tokens_mass":
+            cfg = AutoConfig.from_pretrained(get_official_model_name(model_name))
+            print("-log mass stats: mean ", torch.mean(Y).item(), " std ", torch.std(Y).item())
+            vocab_size = cfg.vocab_size
+            mass = torch.exp(-Y)
+            scaled_mass = mass * vocab_size
+            print("Scaled mass stats: mean ", torch.mean(scaled_mass).item(), " std ", torch.std(scaled_mass).item())
+            Y = scaled_mass
+
+        if project_dim is not None:
+            X = project(X, project_dim)
         
         X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
 
@@ -195,12 +211,18 @@ def compute_relative_error(ridge: Ridge, X_test: torch.Tensor, Y_test: torch.Ten
 def create_dataset_baseline(model: SentenceTransformer,
                             dataset: IterableDataset,
                             dataset_size: int = int(1e4)) -> torch.Tensor:
-    
-    dataset = dataset.shuffle(seed=42)
     model = model.to("cuda")
     batch_size = 32
-    dataset = dataset.iter(batch_size=batch_size)
 
+    # prepare dataset
+    dataset = dataset.shuffle(seed=42)
+    def keep_only_user_prompt(example: dict) -> dict:
+        new_conv = []
+        new_conv.append(example["conversation"][0]) 
+        return {"conversation": new_conv}
+    dataset = dataset.map(keep_only_user_prompt)
+    dataset = dataset.iter(batch_size=batch_size)
+    
     embeddings_list = []
     for i in range(dataset_size // batch_size):
         
@@ -230,12 +252,24 @@ def convert_conversations_to_texts(conversations: list[list[dict]]) -> list[str]
         texts.append(text)
     return texts
 
-def eval_baseline(llm_model_name: str , task):
+def eval_baseline(basline_model, llm_model_name: str , task, project_dim=None):
 
-    print(f"Evaluating baseline for {task}...")
-    path = "data/all-mpnet-base-v2/allenai/WildChat-1M/embeddings.pt"
+    path = f"data/{basline_model}/allenai/WildChat-1M/embeddings.pt"
     embeddings = torch.load(path)  # [dataset_size, embedding_dim]
     Y = torch.load(f"data/{task}/{llm_model_name}/blocks.0.hook_resid_post/Y.pt")
+
+    if task == "pred_perplexity":
+        Y = torch.log(Y + 1e-10)  # predict log perplexity to stabilize training
+
+    if task == "pred_tokens_mass":
+        cfg = AutoConfig.from_pretrained(get_official_model_name(llm_model_name))
+        vocab_size = cfg.vocab_size
+        mass = torch.exp(-Y)
+        scaled_mass = mass 
+        Y = scaled_mass
+
+    if project_dim is not None:
+        embeddings = project(embeddings, project_dim)
 
     X_train, X_test, Y_train, Y_test = train_test_split(embeddings, Y, test_size=0.2, random_state=42)
 
@@ -244,17 +278,15 @@ def eval_baseline(llm_model_name: str , task):
     relative_error = compute_relative_error(ridge, X_test, Y_test)
     r2_score = ridge.score(X_test, Y_test)
 
-    print(f"LLM: {llm_model_name}, relative error: {relative_error:.2f}, R^2: {r2_score:.2f}")
-
     return relative_error, r2_score
 
 
 def create_dataset_lengths(
         model: HookedRootModule,
-        hf_model_name: str,
+        model_name: str,
         tokenizer: AutoTokenizer,
         dataset_name: str,
-        dataset_size: int = int(1e4)
+        dataset_size: int = 1000
         ):
     """
     Creates a dataset for every layer of last activations Xs and perplexity Y.
@@ -269,6 +301,7 @@ def create_dataset_lengths(
     
     hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)]
     
+    hf_model_name = get_official_model_name(model_name)
     dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left" # so the last act corresponds to the last token
@@ -297,7 +330,7 @@ def create_dataset_lengths(
         # record response lengths
         query_length = tokens.shape[1] 
         response = model.generate(tokens,
-                                  max_new_tokens=(model.cfg.n_ctx - query_length),
+                                  max_new_tokens=(model.cfg.n_ctx - query_length - 500),
                                   verbose=False)
         response_only = response[:, query_length:]  # [batch, gen_seq_len]
         not_eos = (response_only != tokenizer.eos_token_id)
@@ -318,3 +351,15 @@ def create_dataset_lengths(
 
 
  
+def project(X: torch.Tensor, target_dim: int) -> torch.Tensor:
+    """
+    Projects X to target_dim using radnom gaussian matrix.
+    X: [num_samples, original_dim]
+    Returns: X_projected: [num_samples, target_dim]
+    """
+    original_dim = X.shape[1]
+    torch.manual_seed(42) # for reproducibility
+    projection_matrix = (target_dim ** -0.5) * torch.randn(original_dim, target_dim)
+
+    X_projected = X @ projection_matrix  # [num_samples, target_dim]
+    return X_projected
