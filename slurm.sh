@@ -1,7 +1,7 @@
 #! /bin/sh
 
 #SBATCH --job-name=barak # job name
-#SBATCH --output=/home/yandex/APDL2425a/group_12/gorodissky/sae/slurm.log # redirect stdout
+#SBATCH --output=/home/yandex/APDL2425a/group_12/gorodissky/sae/%j.log # redirect stdout
 #SBATCH --partition=gpu-h100-killable # (see resources section)
 #SBATCH --time=24:00:00 # hours:minutes:seconds
 #SBATCH --signal=USR1@120 # how to end job when time’s up
@@ -13,4 +13,6 @@
 #SBATCH --exclude=t-100 # exclude nodes from the job
 
 
-python main.py
+script=$1
+echo "Running script: $script"
+python "$script"

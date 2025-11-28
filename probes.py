@@ -58,21 +58,18 @@ def compute_relative_error(ridge: Ridge, X_test: torch.Tensor, Y_test: torch.Ten
     return relative_error
 
 def create_dataset_baseline(model: SentenceTransformer,
-                            dataset: IterableDataset,
-                            dataset_size: int = int(1e4)) -> torch.Tensor:
+                            dataset_name: str,
+                            llm_hf_model_name: str,
+                            dataset_size: int = int(1e4),
+                            L_max=256) -> torch.Tensor:
     model = model.to("cuda")
     batch_size = 32
-
-    # prepare dataset
-    dataset = dataset.shuffle(seed=42)
-    def keep_only_user_prompt(example: dict) -> dict:
-        new_conv = []
-        new_conv.append(example["conversation"][0]) 
-        return {"conversation": new_conv}
-    dataset = dataset.map(keep_only_user_prompt)
-    dataset = dataset.iter(batch_size=batch_size)
     
+    dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{llm_hf_model_name.replace('/', '_')}_L={L_max}")
+    dataset = dataset.shuffle(seed=42)
+    dataset = dataset.iter(batch_size=batch_size)
     embeddings_list = []
+    
     for i in range(dataset_size // batch_size):
         
         conversations = (next(dataset))["conversation"]
@@ -124,12 +121,18 @@ def eval_baseline(basline_model, llm_model_name: str , task, project_dim=None):
       
 def create_datasets(
         model: HookedRootModule,
-        tl_model_name: str,
+        hf_model_name: str,
         tokenizer: AutoTokenizer,
         dataset_name: str,
         pooling_strategy: str = "last",
         tokens_ids: list[int] = None,
-        dataset_size: int = int(1e4)):
+        dataset_size: int = int(1e4),
+        record_nll_telemetry: bool = True,
+        record_tokens_mass_telemetry: bool = True,
+        record_length_telemetry: bool = True,
+        batch_size: int = 16,
+        L_max: int = 256
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """
     Creates tensor X of residual stream activation for every layer using the pooling strategy pooling_strategy 
     Creates dict of tensors Y with keys the different tasks
@@ -143,15 +146,12 @@ def create_datasets(
 
     model = model.to("cuda")
 
-    batch_size = 16
     num_iterations = dataset_size // batch_size
     
-    L_max = 256
     
     hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)] # all layer resuidual stream
     
     # load dataset
-    hf_model_name = get_official_model_name(tl_model_name)
     dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left" # so the last act corresponds to the last token
@@ -181,14 +181,15 @@ def create_datasets(
             acts_per_layer[hookpoint].append(acts_to_save.cpu())  # [batch, d_model]
 
         # record labels for different tasks
-        # perplexity
-        Y_mnll = record_nll(tokens, att_mask, logits)  # [batch]
-        Ys["pred_nll"].append(Y_mnll.cpu())
-        Y_tokens_mass = record_tokens_mass(logits, tokens_ids)  # [batch]
-        Ys["pred_tokens_mass"].append(Y_tokens_mass.cpu())
-        Y_lengths = record_length(tokens, model, tokenizer)  # [batch]
-        Ys["pred_length"].append(Y_lengths.cpu())
-
+        if record_nll_telemetry:
+            Y_mnll = record_nll(tokens, att_mask, logits)  # [batch]
+            Ys["pred_nll"].append(Y_mnll.cpu())
+        if record_tokens_mass_telemetry:
+            Y_tokens_mass = record_tokens_mass(logits, tokens_ids)  # [batch]
+            Ys["pred_tokens_mass"].append(Y_tokens_mass.cpu())
+        if record_length_telemetry:
+            Y_lengths = record_length(tokens, model, tokenizer)  # [batch]
+            Ys["pred_length"].append(Y_lengths.cpu())
 
         print(f"Processed batch {i+1}/{num_iterations}", file=sys.stderr)
     

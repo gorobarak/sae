@@ -15,11 +15,11 @@ from probes import eval_baseline, eval, create_dataset_baseline, project
 model_to_colors = {
     "meta-llama/Llama-3.1-8B-Instruct": "orange",
     "Qwen2.5-7B-Instruct": "green",
-    "phi-3": "red",
-    "mistral-7b-instruct": "blue",
+    # "phi-3": "red",
+    # "mistral-7b-instruct": "blue",
 }
 # %%
-task = "pred_tokens_mass"
+task = "pred_length"
 baseline_model = "google/embeddinggemma-300m"
 for model_name, color in model_to_colors.items():
     relative_error_baseline, r2_score_baseline = eval_baseline(baseline_model, model_name, task)
