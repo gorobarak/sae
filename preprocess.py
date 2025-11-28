@@ -42,6 +42,6 @@ def preprocess(dataset_name: str, model_name: str, L_max: int = 256):
 
 if __name__ == "__main__":
     disable_progress_bar()
-    for model_name in ["meta-llama/Llama-3.1-8B", "Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.1", "microsoft/Phi-3-mini-4k-instruct"]:
+    for model_name in ["meta-llama/Llama-3.1-8-Instruct", "Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.1", "microsoft/Phi-3-mini-4k-instruct"]:
         print(f"Preprocessing for model: {model_name}", file=os.sys.stderr)
         preprocess("allenai/WildChat-1M", model_name, L_max=256)
