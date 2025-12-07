@@ -4,39 +4,43 @@ os.environ["HF_HOME"] = "/home/yandex/APDL2425a/group_12/gorodissky/.cache/huggi
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import sys
 from sentence_transformers import SentenceTransformer
-from  probes import create_datasets, code_words
+from  probes import create_dataset_baseline, create_datasets, code_words, math_words, tl_model_names
 import torch
 from transformer_lens import HookedTransformer
 from transformer_lens.loading_from_pretrained import get_official_model_name
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 
 
 dataset_name = "allenai/WildChat-1M"
-tl_model_names = ["mistral-7b-instruct", "phi-3"]
+# pooling_strategies = ["last"]
+dataset_size = 32 * 100
+batch_size = 32
 
-for tl_model_name in tl_model_names:
+for tl_model_name in ["phi-3"]: #tl_model_names.values():
     hf_model_name = get_official_model_name(tl_model_name)
-    model = HookedTransformer.from_pretrained(tl_model_name, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(hf_model_name)
     tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
-    dataset_size = int(1e3)
-    batch_size = 16
-
+    token_ids = sum(tokenizer(math_words, add_special_tokens=False)["input_ids"], [])
+    print(f"processing {hf_model_name}", file=sys.stderr)
     Xs, Ys = create_datasets(
         model,
-        hf_model_name,
+        tl_model_name,
         tokenizer,
         dataset_name,
         dataset_size=dataset_size,
         batch_size=batch_size,
-        record_nll_telemetry=False,
-        record_tokens_mass_telemetry=False,
-        record_length_telemetry=True,
+        tokens_ids=token_ids
     )
+    path = f"data/pred_gen/{dataset_name}/{tl_model_name}"
+    os.makedirs(path, exist_ok=True)
+    for label_name, labels in Ys.items():
+        torch.save(labels,f"{path}/Y_{label_name}.pt")
 
-    for hookpoint, X in Xs.items():
-        for task, Y in Ys.items():
-            save_dir = f"data/{task}/{tl_model_name}/{hookpoint}"
-            os.makedirs(save_dir, exist_ok=True)
-            torch.save(Y, os.path.join(save_dir, "Y.pt"))
-            torch.save(X, os.path.join(save_dir, "X.pt"))
+    for layer_idx, pooling_dict in Xs.items():
+        for pooling_strategy, acts in pooling_dict.items():
+            os.makedirs(f"{path}/layer_{layer_idx}", exist_ok=True)
+            torch.save(acts, f"{path}/layer_{layer_idx}/X_{pooling_strategy}.pt")
+
+
+

@@ -4,68 +4,88 @@ from transformer_lens.hook_points import HookedRootModule
 from transformer_lens.loading_from_pretrained import get_official_model_name
 from datasets import IterableDataset, Dataset, load_from_disk
 import torch
+from torch.nn import Identity
 from torch.utils.data import DataLoader
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import train_test_split
 import os
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, DataCollatorWithPadding, AutoConfig
+from transformers import AutoTokenizer, DataCollatorWithPadding, AutoConfig, PreTrainedModel
 
 
+tl_model_names = {
+    "llama": "meta-llama/Llama-3.1-8B-Instruct",
+    "qwen": "Qwen2.5-7B-Instruct",
+    "mistral": "mistral-7b-instruct",
+    "phi": "phi-3",
+}
+
+def get_hf_model_name(tl_model_name: str) -> str:
+    return get_official_model_name(tl_model_name)
 
 code_words = ["def", "class", "import", "return", "lambda", 
               "async", "await","func", "var", "let", "const", "null", 
               "struct", "enum", "include", "template", "typename"]
+
+math_words = ["assume", "let", "therefore", "hence", "thus", "suppose",
+                "expand", "differentiate", "integrate", "factor", "solve",
+                "substitute", "equation", "expression"]
 
 def fit_ridge_regression(X: torch.Tensor, Y: torch.Tensor):
     ridge = Ridge(alpha=1.0)
     ridge.fit(X, Y)
     return ridge
 
-def eval(model_name, task, project_dim=None):
-    path = f"data/{task}/{model_name}"
+def eval(model_name, task, dataset, project_dim=None, pooling_strategy="last"):
+    
+    # load labels
+    Y = torch.load(f"data/pred_gen/{dataset}/{model_name}/Y_{task}.pt") # [dataset_size]
+    
+    # load acts
+    path = f"data/pred_nll/{dataset}/{model_name}" # doesn't matter what task bc X is the same
     hookpoints = os.listdir(path)
     hookpoints = sorted(hookpoints, key=lambda x: int(x.split(".")[1]))
     layers = [int(hookpoint.split(".")[1]) for hookpoint in hookpoints]
+    
     rel_errs = []
     r2_scores = []
     for hookpoint in hookpoints:
-        X = torch.load(f"{path}/{hookpoint}/X.pt") # [dataset_size, hidden_dim]
-        Y = torch.load(f"{path}/{hookpoint}/Y.pt") # [dataset_size]
+        cur_Y = Y.clone()
+        X_name = f"X{'_' + pooling_strategy if pooling_strategy else ''}.pt"
+        X = torch.load(f"{path}/{hookpoint}/{X_name}") # [dataset_size, hidden_dim]
+        X = X[:cur_Y.shape[0], :] # take only as many examples as in Y
+        X, cur_Y, num_valid_examples = filter_valid_examples(X, cur_Y)
         
-        if task == "pred_perplexity":
-            Y = torch.log(Y + 1e-10)  # predict log perplexity to stabilize training
-
         if project_dim is not None:
             X = project(X, project_dim)
         
-        X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
-
+        X_train, X_test, Y_train, Y_test = train_test_split(X, cur_Y, test_size=0.2, random_state=42)
         ridge = fit_ridge_regression(X_train, Y_train)
 
         relative_error = compute_relative_error(ridge, X_test, Y_test)
         r2_score = ridge.score(X_test, Y_test)
 
-        print(f"Model: {model_name}, Hookpoint: {hookpoint}, Test relative error: {relative_error:.4f}, R^2: {r2_score:.4f}")
+        print(f"Model: {model_name}, Hookpoint: {hookpoint}, rel_err: {relative_error:.2f}%, R^2: {r2_score:.4f}")
         rel_errs.append(relative_error)
         r2_scores.append(r2_score)
-
+    print(f"Num valid examples: {num_valid_examples} / {Y.shape[0]}", file=sys.stderr)
+    
     return layers, rel_errs, r2_scores
 
 def compute_relative_error(ridge: Ridge, X_test: torch.Tensor, Y_test: torch.Tensor) -> float:
     Y_pred = ridge.predict(X_test)
-    relative_error = torch.mean(torch.abs(Y_test - Y_pred) / (Y_test + 1e-10)).item()
+    relative_error = torch.mean(torch.abs(Y_test - Y_pred) / (Y_test + 1e-10)).item() * 100
     return relative_error
 
 def create_dataset_baseline(model: SentenceTransformer,
                             dataset_name: str,
-                            llm_hf_model_name: str,
+                            tl_model_name: str,
                             dataset_size: int = int(1e4),
-                            L_max=256) -> torch.Tensor:
+                            L_max: int = 256,
+                            batch_size: int = 32) -> torch.Tensor:
     model = model.to("cuda")
-    batch_size = 32
     
-    dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{llm_hf_model_name.replace('/', '_')}_L={L_max}")
+    dataset = load_from_disk(f"data/preprocessed/{dataset_name}/{tl_model_name}_L={L_max}")
     dataset = dataset.shuffle(seed=42)
     dataset = dataset.iter(batch_size=batch_size)
     embeddings_list = []
@@ -98,39 +118,42 @@ def convert_conversations_to_texts(conversations: list[list[dict]]) -> list[str]
         texts.append(text)
     return texts
 
-def eval_baseline(basline_model, llm_model_name: str , task, project_dim=None):
-
-    path = f"data/{basline_model}/allenai/WildChat-1M/embeddings.pt"
+def eval_baseline(baseline_model_name: str,
+                  dataset_name: str,
+                  tl_model_name: str, 
+                  task, 
+                  project_dim=None):
+    Y = torch.load(f"data/pred_gen/{dataset_name}/{tl_model_name}/Y_{task}.pt")
+    path = f"data/embeddings/{baseline_model_name}/{dataset_name}/{tl_model_name}_L=256/embeddings.pt"
     embeddings = torch.load(path)  # [dataset_size, embedding_dim]
-    Y = torch.load(f"data/{task}/{llm_model_name}/blocks.0.hook_resid_post/Y.pt")
-
-    if task == "pred_perplexity":
-        Y = torch.log(Y + 1e-10)  # predict log perplexity to stabilize training
-
+    embeddings = embeddings[:Y.shape[0], :]  # take only as many examples as in Y
+    embeddings, Y, num_valid_examples = filter_valid_examples(embeddings, Y)
+    print(f"Num valid examples: {num_valid_examples} / {Y.shape[0]}", file=sys.stderr)
+    
     if project_dim is not None:
         embeddings = project(embeddings, project_dim)
-
+    
     X_train, X_test, Y_train, Y_test = train_test_split(embeddings, Y, test_size=0.2, random_state=42)
 
     ridge = fit_ridge_regression(X_train, Y_train)
 
     relative_error = compute_relative_error(ridge, X_test, Y_test)
     r2_score = ridge.score(X_test, Y_test)
-
+    print(f"Baseline Model: {baseline_model_name}, rel_err: {relative_error:.2f}%, R^2: {r2_score:.4f}")
     return relative_error, r2_score
       
 def create_datasets(
-        model: HookedRootModule,
-        hf_model_name: str,
+        model: PreTrainedModel,
+        tl_model_name: str,
         tokenizer: AutoTokenizer,
         dataset_name: str,
-        pooling_strategy: str = "last",
+        pooling_strategies: list[str] = ["last"],
         tokens_ids: list[int] = None,
         dataset_size: int = int(1e4),
         record_nll_telemetry: bool = True,
         record_tokens_mass_telemetry: bool = True,
         record_length_telemetry: bool = True,
-        batch_size: int = 16,
+        batch_size: int = 32,
         L_max: int = 256
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """
@@ -143,60 +166,64 @@ def create_datasets(
     Assumes dataset was preprocessed and has "input_ids" key which is tokenized input in chat format, and input_ids is bounded by some L_max.
     Preprocessd dataset should be in data/preprocessed/{dataset_name}/{model_name}_L={L_max}
     """
-
+    
     model = model.to("cuda")
-
-    num_iterations = dataset_size // batch_size
     
-    
-    hookpoints = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)] # all layer resuidual stream
+    # workaround for HF Transformers output_hidden_states=True outputing the final layer output after the final LN
+    identity = Identity()
+    model.model.norm = identity
     
     # load dataset
-    dataset = load_from_disk(f"data/preprocessed/{dataset_name.replace('/', '_')}/{hf_model_name.replace('/', '_')}_L={L_max}")
+    dataset = load_from_disk(f"data/preprocessed/{dataset_name}/{tl_model_name}_L={L_max}")
+    dataset = dataset.remove_columns([col for col in dataset.column_names if col not in ["input_ids"]]) # keep only input_ids for batching
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left" # so the last act corresponds to the last token
-    if not tokenizer.pad_token:
-        tokenizer.pad_token = tokenizer.eos_token # doen't matter what we pad with since we will mask it out
-    collator = DataCollatorWithPadding(tokenizer=tokenizer, padding='longest') # collate examples to batch by padding to longest in batch
+    tokenizer.pad_token = tokenizer.eos_token 
+    collator = DataCollatorWithPadding(tokenizer=tokenizer, padding='longest') 
     dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
     data_loader_iter = iter(dataloader)
+
+    dataset_size = min(len(dataset), dataset_size)
+    num_iterations = dataset_size // batch_size
     
     Ys = defaultdict(list)
-    acts_per_layer = defaultdict(list)
+    acts_per_layer_per_pooling = defaultdict(lambda: defaultdict(list))  # layer_idx -> pooling_strategy -> list of tensors
     for i in range(num_iterations):
-        encoded_batch = next(data_loader_iter)
-        tokens = encoded_batch.input_ids.to("cuda")  # [batch, seq_len]
-        att_mask = encoded_batch.attention_mask.to("cuda")  # [batch, seq_len]
+        inputs = next(data_loader_iter)
+        inputs = {key: val.to("cuda") for key, val in inputs.items()}
         with torch.no_grad():
-            logits, cache = model.run_with_cache(
-                tokens,
-                names_filter=hookpoints,
-                attention_mask=att_mask
-            )
-        
-        # record acts based on pooling strategy
-        for hookpoint in hookpoints:
-            acts = cache[hookpoint] # [batch, seq_len, d_model]
-            acts_to_save = pool_activations(acts, att_mask, pooling_strategy)  # [batch, d_model]
-            acts_per_layer[hookpoint].append(acts_to_save.cpu())  # [batch, d_model]
+            output = model(**inputs, output_hidden_states=True)
+            hidden_states = output.hidden_states[1:]  # exclude embedding layer, list of [batch, seq_len, d_model]
 
-        # record labels for different tasks
-        if record_nll_telemetry:
-            Y_mnll = record_nll(tokens, att_mask, logits)  # [batch]
-            Ys["pred_nll"].append(Y_mnll.cpu())
-        if record_tokens_mass_telemetry:
-            Y_tokens_mass = record_tokens_mass(logits, tokens_ids)  # [batch]
-            Ys["pred_tokens_mass"].append(Y_tokens_mass.cpu())
-        if record_length_telemetry:
-            Y_lengths = record_length(tokens, model, tokenizer)  # [batch]
-            Ys["pred_length"].append(Y_lengths.cpu())
+        # record acts based on pooling strategy
+        for layer_idx in range(model.cfg.num_hidden_layers):
+            acts = hidden_states[layer_idx] # [batch, seq_len, d_model]
+            for pooling_strategy in pooling_strategies:
+                acts_to_save = pool_activations(acts, inputs["attention_mask"], pooling_strategy)  # [batch, d_model]
+                acts_per_layer_per_pooling[layer_idx][pooling_strategy].append(acts_to_save.cpu())  # [batch, d_model]
+
+        # # generate responses
+        # responses = generate(**inputs, model=model, eos_token_id=tokenizer.eos_token_id)  # [batch, gen_len]
+        # Ys["response_token_ids"].append(responses.cpu()) 
+        
+        # # record length 
+        # lengths = compute_response_length(responses, tokenizer.eos_token_id)  # [batch]
+        # Ys["lengths"].append(lengths.cpu())
 
         print(f"Processed batch {i+1}/{num_iterations}", file=sys.stderr)
     
-    Xs_cat = {key: torch.cat(acts_per_layer[key], dim=0) for key in acts_per_layer.keys()} # [dataset_size, hidden_dim]
-    Ys_cat = {key: torch.cat(Ys[key], dim=0) for key in Ys.keys()} # [dataset_size]
+    for layer_idx, pooling_dict in acts_per_layer_per_pooling.items():
+        for pooling_strategy, acts_list in pooling_dict.items():
+            acts_tensor = torch.cat(acts_list, dim=0)  # [dataset_size, d_model]
+            acts_per_layer_per_pooling[layer_idx][pooling_strategy] = acts_tensor  # [dataset_size, d_model]
+    Ys_cat = {}
+    for label_name, lst_tensors in Ys.items():
+        if label_name == "response_token_ids":
+            Ys_cat[label_name] = concat_tensors_of_different_lengths(lst_tensors, padding_value=tokenizer.eos_token_id) # [dataset_size, max_gen_len]
+        else:
+            Ys_cat[label_name] = torch.cat(lst_tensors, dim=0)  # [dataset_size] 
     
-    return Xs_cat, Ys_cat
+    return acts_per_layer_per_pooling, Ys_cat
 
 def pool_activations(acts: torch.Tensor, att_mask: torch.Tensor, pooling_strategy: str) -> torch.Tensor:
     """
@@ -246,15 +273,42 @@ def record_nll(tokens: torch.Tensor, att_mask: torch.Tensor, logits: torch.Tenso
     mean_nll = sums / counts  # [batch]
     return mean_nll
 
-def record_length(tokens: torch.Tensor, model: HookedRootModule, tokenizer: AutoTokenizer) -> torch.Tensor:
-    query_length = tokens.shape[1] 
-    response = model.generate(tokens,
-                                max_new_tokens=(model.cfg.n_ctx - query_length - 500),
-                                verbose=False)
-    response_only = response[:, query_length:]  # [batch, gen_seq_len]
-    not_eos = (response_only != tokenizer.eos_token_id)
+def generate(input_ids: torch.Tensor, 
+             attention_mask: torch.Tensor, 
+             model: PreTrainedModel, 
+             eos_token_id: int,
+             max_new_tokens: int = 2048) -> torch.Tensor:
+    
+    query_length = input_ids.shape[1]
+    response = model.generate(input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                max_new_tokens=max_new_tokens, # max generation length
+                                do_sample=False, # greedy decoding for reproducibility
+                                pad_token_id=eos_token_id # so we can know if a generation was truncated
+                            ) # [batch, query_length + gen_len]
+    response_without_query = response[:, query_length:]  # [batch, gen_len]
+    return response_without_query
+
+def compute_response_length(responses: torch.Tensor,  eos_token_id: int) -> torch.Tensor:
+    # responses: [batch, gen_len]
+    not_eos = (responses != eos_token_id)
     lengths = not_eos.sum(dim=-1) + 1  # +1 to account for eos token; [batch]
+    is_truncated = (responses[:, -1] != eos_token_id) # [batch]
+    lengths[is_truncated] = -1  # mark truncated generations with -1
     return lengths
+
+def concat_tensors_of_different_lengths(tensors: list[torch.Tensor], padding_value: int) -> torch.Tensor:
+    num_rows = sum(tensor.size(0) for tensor in tensors)
+    max_cols = max(tensor.size(1) for tensor in tensors)
+    dtype = tensors[0].dtype
+    device = tensors[0].device
+    result = torch.full((num_rows, max_cols), padding_value, dtype=dtype, device=device)
+    offset = 0
+    for tensor in tensors:
+        rows, cols = tensor.size()
+        result[offset:offset + rows, :cols] = tensor
+        offset += rows
+    return result
 
 def project(X: torch.Tensor, target_dim: int) -> torch.Tensor:
     """
@@ -268,3 +322,16 @@ def project(X: torch.Tensor, target_dim: int) -> torch.Tensor:
 
     X_projected = X @ projection_matrix  # [num_samples, target_dim]
     return X_projected
+
+def filter_valid_examples(X: torch.Tensor, Y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Filters out examples where Y is -1.
+    X: [num_samples, dim]
+    Y: [num_samples]
+    Returns: X_filtered: [num_valid_samples, dim], Y_filtered: [num_valid_samples]
+    """
+    valid_mask = (Y != -1)
+    X_filtered = X[valid_mask]
+    Y_filtered = Y[valid_mask]
+    num_valid_examples = X_filtered.shape[0]
+    return X_filtered, Y_filtered, num_valid_examples
