@@ -11,7 +11,7 @@ from transformer_lens.loading_from_pretrained import get_official_model_name
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 
-# some change
+
 dataset_name = "allenai/WildChat-1M"
 pooling_strategies = ["last", "mean", "max"]
 dataset_size = 10000
