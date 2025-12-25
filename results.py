@@ -3,6 +3,8 @@ import os
 os.environ["HF_HOME"] = "/home/yandex/APDL2425a/group_12/gorodissky/.cache/huggingface"
 from sentence_transformers import SentenceTransformer
 from datasets import load_dataset, load_from_disk, disable_progress_bar
+import warnings
+from sklearn.exceptions import ConvergenceWarning
 import torch
 from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
@@ -11,13 +13,17 @@ from matplotlib import colormaps as cm
 import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, DataCollatorWithPadding
 from probes import eval_baseline, eval, create_dataset_baseline, project
-# %%
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
 model_to_colors = {
-    # "meta-llama/Llama-3.1-8B-Instruct": "Orange",
-    # "Qwen2.5-7B-Instruct": "Green",
-    # "phi-3": "Red",
+    "meta-llama/Llama-3.1-8B-Instruct": "Orange",
+    "Qwen2.5-7B-Instruct": "Green",
+    "phi-3": "Red",
     "mistral-7b-instruct": "Blue",
 }
+baseline_model = "google/embeddinggemma-300m"
+warnings.filterwarnings('ignore', category=ConvergenceWarning)
+
 # %%
 # Vanilla experiment
 task = "pred_nll"
@@ -160,4 +166,55 @@ for model_name, color in model_to_colors.items():
     plt.legend(loc='lower center', ncols=2, bbox_to_anchor=(0.5, -0.3))
     plt.title(rf"Pooling comparison on predicting {task} $(\downarrow)$")
     plt.show()
+# %%
+# Length threshold classification
+# for model, dataset, threshold, pooling_startegy plot accuracy VS layer percentage
+dataset = "allenai/WildChat-1M"
+task = "lengths"
+for model_name, color in model_to_colors.items():
+    model_dir = f"data/pred_gen/{dataset}/{model_name}"
+    layers = [int(folder.split("_")[1]) for folder in os.listdir(model_dir) 
+                if os.path.isdir(os.path.join(model_dir, folder))]
+    layers = sorted(layers)
+    for q in [0.25, 0.5, 0.75]:
+        # prepare Y_binary
+        Y_lengths = torch.load(f"{model_dir}/Y_lengths.pt")
+        Y_lengths[Y_lengths == -1] = 2048  # replace -1 with max length
+        threshold = torch.quantile(Y_lengths.float(), q).item()  
+        Y_binary = Y_lengths >= threshold
+
+        # evaluate baseline
+        baseline_dir = f"data/embeddings/{baseline_model}/{dataset}/{model_name}_L=256"
+        embeddings = torch.load(f"{baseline_dir}/embeddings.pt")
+        embeddings = embeddings[:Y_binary.shape[0]]  # Take same examples as Y
+        X_train_base, X_test_base, Y_train_base, Y_test_base = train_test_split(embeddings, Y_binary, test_size=0.2, random_state=42)
+        clf_baseline = LogisticRegression(max_iter=1000)
+        clf_baseline.fit(X_train_base, Y_train_base)
+        acc_baseline = clf_baseline.score(X_test_base, Y_test_base)
+
+        cmap = cm.get_cmap(color+"s")
+        intesities = [0.3, 0.45, 0.6]
+        for pooling_strategy, intensity in zip(["mean", "max", "last"], intesities):
+            print(f"Evaluating model: {model_name}, quantile threshold: {q}, pooling: {pooling_strategy}")
+            # evalute model at each layer
+            accs = []
+            for layer in layers:
+                X = torch.load(f"{model_dir}/layer_{layer}/X_{pooling_strategy}.pt")
+                X = X[:Y_binary.shape[0]]  # Take same examples as Y
+                X_train, X_test, Y_train, Y_test = train_test_split(X, Y_binary, test_size=0.2, random_state=42)
+                clf = LogisticRegression(max_iter=200)
+                clf.fit(X_train, Y_train)
+                acc = clf.score(X_test, Y_test)
+                accs.append(acc)
+            
+            layer_percentages = [layer / max(layers) for layer in layers]
+            color_shade = cmap(intensity)
+            plt.plot(layer_percentages, accs, marker='o', label=f"{model_name} ({pooling_strategy})", color=color_shade)
+            plt.axhline(y=acc_baseline, color=color_shade, linestyle='--')
+            plt.xlabel("Layer percentage")
+            plt.ylabel("Accuracy")
+            plt.grid()
+            plt.legend(loc='lower center', ncols=2, bbox_to_anchor=(0.5, -0.3))
+            plt.title(rf"Length threshold classification (q={q}, threshold={threshold}) for {model_name} $(\uparrow)$")
+        plt.show()
 # %%

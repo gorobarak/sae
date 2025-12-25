@@ -13,15 +13,14 @@ from datasets import load_dataset
 
 
 dataset_name = "allenai/WildChat-1M"
-# pooling_strategies = ["last"]
-dataset_size = 32 * 100
+pooling_strategies = ["last", "mean", "max"]
+dataset_size = 10000
 batch_size = 32
 
-for tl_model_name in ["phi-3"]: #tl_model_names.values():
+for tl_model_name in tl_model_names.values():
     hf_model_name = get_official_model_name(tl_model_name)
     model = AutoModelForCausalLM.from_pretrained(hf_model_name)
     tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
-    token_ids = sum(tokenizer(math_words, add_special_tokens=False)["input_ids"], [])
     print(f"processing {hf_model_name}", file=sys.stderr)
     Xs, Ys = create_datasets(
         model,
@@ -30,7 +29,7 @@ for tl_model_name in ["phi-3"]: #tl_model_names.values():
         dataset_name,
         dataset_size=dataset_size,
         batch_size=batch_size,
-        tokens_ids=token_ids
+        pooling_strategies=pooling_strategies,
     )
     path = f"data/pred_gen/{dataset_name}/{tl_model_name}"
     os.makedirs(path, exist_ok=True)
@@ -42,5 +41,23 @@ for tl_model_name in ["phi-3"]: #tl_model_names.values():
             os.makedirs(f"{path}/layer_{layer_idx}", exist_ok=True)
             torch.save(acts, f"{path}/layer_{layer_idx}/X_{pooling_strategy}.pt")
 
+
+def run_generate_baseline_dataset():
+    sentence_model_name = "google/embeddinggemma-300m"
+    sentence_model = SentenceTransformer(sentence_model_name)
+    dataset_name = "allenai/WildChat-1M"
+    for tl_model_name in ["mistral-7b-instruct", "phi-3"]:
+        embeddings = create_dataset_baseline(
+            sentence_model,
+            dataset_name,
+            tl_model_name,
+            dataset_size=int(1e4),
+            L_max=256,
+            batch_size=32
+        )
+        path = f"data/embeddings/{sentence_model_name}/{dataset_name}/{tl_model_name}_L=256"
+        os.makedirs(path, exist_ok=True)
+        torch.save(embeddings.cpu(), f"{path}/embeddings.pt")
+        print(f"Saved embeddings to {path}/embeddings.pt", file=os.sys.stderr)
 
 

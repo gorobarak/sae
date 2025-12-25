@@ -6,7 +6,7 @@ from datasets import IterableDataset, Dataset, load_from_disk
 import torch
 from torch.nn import Identity
 from torch.utils.data import DataLoader
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, LogisticRegression
 from sklearn.model_selection import train_test_split
 import os
 from sentence_transformers import SentenceTransformer
@@ -31,28 +31,41 @@ math_words = ["assume", "let", "therefore", "hence", "thus", "suppose",
                 "expand", "differentiate", "integrate", "factor", "solve",
                 "substitute", "equation", "expression"]
 
-def fit_ridge_regression(X: torch.Tensor, Y: torch.Tensor):
-    ridge = Ridge(alpha=1.0)
-    ridge.fit(X, Y)
-    return ridge
+def fit_estimator(X: torch.Tensor, Y: torch.Tensor, task_type="regression"):
+    est = None
+    if task_type == "regression":
+        ridge = Ridge(alpha=1.0)
+        ridge.fit(X, Y) 
+        est = ridge
+    elif task_type == "classification":
+        clf = LogisticRegression(max_iter=1000)
+        clf.fit(X, Y)
+        est = clf
+    else:
+        raise ValueError(f"Unknown task type: {task_type}")
+    return est
 
-def eval(model_name, task, dataset, project_dim=None, pooling_strategy="last"):
+def eval(model_name, 
+         task, 
+         dataset, 
+         task_type="regression",
+         project_dim=None, 
+         pooling_strategy="last"):
     
     # load labels
     Y = torch.load(f"data/pred_gen/{dataset}/{model_name}/Y_{task}.pt") # [dataset_size]
     
     # load acts
-    path = f"data/pred_nll/{dataset}/{model_name}" # doesn't matter what task bc X is the same
-    hookpoints = os.listdir(path)
-    hookpoints = sorted(hookpoints, key=lambda x: int(x.split(".")[1]))
-    layers = [int(hookpoint.split(".")[1]) for hookpoint in hookpoints]
-    
+    path = f"data/pred_gen/{dataset}/{model_name}"
+    layers = [int(folder.split("_")[1]) for folder in os.listdir(path) 
+                if os.path.isdir(os.path.join(path, folder))]
+    layers = sorted(layers)
     rel_errs = []
     r2_scores = []
-    for hookpoint in hookpoints:
+    for layer in layers:
         cur_Y = Y.clone()
-        X_name = f"X{'_' + pooling_strategy if pooling_strategy else ''}.pt"
-        X = torch.load(f"{path}/{hookpoint}/{X_name}") # [dataset_size, hidden_dim]
+        X_name = f"X{('_' + pooling_strategy) if pooling_strategy else ''}.pt"
+        X = torch.load(f"{path}/layer_{layer}/{X_name}") # [dataset_size, hidden_dim]
         X = X[:cur_Y.shape[0], :] # take only as many examples as in Y
         X, cur_Y, num_valid_examples = filter_valid_examples(X, cur_Y)
         
@@ -60,20 +73,46 @@ def eval(model_name, task, dataset, project_dim=None, pooling_strategy="last"):
             X = project(X, project_dim)
         
         X_train, X_test, Y_train, Y_test = train_test_split(X, cur_Y, test_size=0.2, random_state=42)
-        ridge = fit_ridge_regression(X_train, Y_train)
+        estimator = fit_estimator(X_train, Y_train, task_type)
 
-        relative_error = compute_relative_error(ridge, X_test, Y_test)
-        r2_score = ridge.score(X_test, Y_test)
+        Y_pred = estimator.predict(X_test)
+        relative_error = compute_relative_error(Y_pred, Y_test) if task_type == "regression" else -1.0
+        score = estimator.score(X_test, Y_test)
 
-        print(f"Model: {model_name}, Hookpoint: {hookpoint}, rel_err: {relative_error:.2f}%, R^2: {r2_score:.4f}")
+        print(f"Layer: {layer}, rel_err (reg only): {relative_error:.2f}%, score (R^2 for reg /acc for clf): {score:.4f}")
         rel_errs.append(relative_error)
-        r2_scores.append(r2_score)
-    print(f"Num valid examples: {num_valid_examples} / {Y.shape[0]}", file=sys.stderr)
+        r2_scores.append(score)
     
     return layers, rel_errs, r2_scores
 
-def compute_relative_error(ridge: Ridge, X_test: torch.Tensor, Y_test: torch.Tensor) -> float:
-    Y_pred = ridge.predict(X_test)
+def eval_baseline(baseline_model_name: str,
+                  dataset_name: str,
+                  tl_model_name: str, 
+                  task, 
+                  project_dim=None,
+                  task_type="regression"):
+    Y = torch.load(f"data/pred_gen/{dataset_name}/{tl_model_name}/Y_{task}.pt")
+    num_examples = Y.shape[0]
+    path = f"data/embeddings/{baseline_model_name}/{dataset_name}/{tl_model_name}_L=256/embeddings.pt"
+    embeddings = torch.load(path)  # [dataset_size, embedding_dim]
+    embeddings = embeddings[:num_examples, :]  # take only as many examples as in Y
+    embeddings, Y, num_valid_examples = filter_valid_examples(embeddings, Y)
+    print(f"Num valid examples: {num_valid_examples} / {num_examples}", file=sys.stderr)
+    
+    if project_dim is not None:
+        embeddings = project(embeddings, project_dim)
+    
+    X_train, X_test, Y_train, Y_test = train_test_split(embeddings, Y, test_size=0.2, random_state=42)
+
+    estimator = fit_estimator(X_train, Y_train, task_type)
+
+    Y_pred = estimator.predict(X_test)
+    relative_error = compute_relative_error(Y_pred, Y_test) if task_type == "regression" else -1.0
+    score = estimator.score(X_test, Y_test)
+    print(f"Baseline Model: {baseline_model_name}, rel_err: {relative_error:.2f}%, R^2: {score:.4f}")
+    return relative_error, score
+
+def compute_relative_error(Y_pred: torch.Tensor, Y_test: torch.Tensor) -> float:
     relative_error = torch.mean(torch.abs(Y_test - Y_pred) / (Y_test + 1e-10)).item() * 100
     return relative_error
 
@@ -117,30 +156,6 @@ def convert_conversations_to_texts(conversations: list[list[dict]]) -> list[str]
             text += msg['content'] + "\n\n"
         texts.append(text)
     return texts
-
-def eval_baseline(baseline_model_name: str,
-                  dataset_name: str,
-                  tl_model_name: str, 
-                  task, 
-                  project_dim=None):
-    Y = torch.load(f"data/pred_gen/{dataset_name}/{tl_model_name}/Y_{task}.pt")
-    path = f"data/embeddings/{baseline_model_name}/{dataset_name}/{tl_model_name}_L=256/embeddings.pt"
-    embeddings = torch.load(path)  # [dataset_size, embedding_dim]
-    embeddings = embeddings[:Y.shape[0], :]  # take only as many examples as in Y
-    embeddings, Y, num_valid_examples = filter_valid_examples(embeddings, Y)
-    print(f"Num valid examples: {num_valid_examples} / {Y.shape[0]}", file=sys.stderr)
-    
-    if project_dim is not None:
-        embeddings = project(embeddings, project_dim)
-    
-    X_train, X_test, Y_train, Y_test = train_test_split(embeddings, Y, test_size=0.2, random_state=42)
-
-    ridge = fit_ridge_regression(X_train, Y_train)
-
-    relative_error = compute_relative_error(ridge, X_test, Y_test)
-    r2_score = ridge.score(X_test, Y_test)
-    print(f"Baseline Model: {baseline_model_name}, rel_err: {relative_error:.2f}%, R^2: {r2_score:.4f}")
-    return relative_error, r2_score
       
 def create_datasets(
         model: PreTrainedModel,
@@ -196,7 +211,7 @@ def create_datasets(
             hidden_states = output.hidden_states[1:]  # exclude embedding layer, list of [batch, seq_len, d_model]
 
         # record acts based on pooling strategy
-        for layer_idx in range(model.cfg.num_hidden_layers):
+        for layer_idx in range(model.config.num_hidden_layers):
             acts = hidden_states[layer_idx] # [batch, seq_len, d_model]
             for pooling_strategy in pooling_strategies:
                 acts_to_save = pool_activations(acts, inputs["attention_mask"], pooling_strategy)  # [batch, d_model]
@@ -292,7 +307,7 @@ def generate(input_ids: torch.Tensor,
 def compute_response_length(responses: torch.Tensor,  eos_token_id: int) -> torch.Tensor:
     # responses: [batch, gen_len]
     not_eos = (responses != eos_token_id)
-    lengths = not_eos.sum(dim=-1) + 1  # +1 to account for eos token; [batch]
+    lengths = not_eos.sum(dim=-1) + 1  # +1 to account for last eos token; [batch]
     is_truncated = (responses[:, -1] != eos_token_id) # [batch]
     lengths[is_truncated] = -1  # mark truncated generations with -1
     return lengths
