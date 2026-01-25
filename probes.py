@@ -1,8 +1,6 @@
 from collections import defaultdict
 import sys
-from transformer_lens.hook_points import HookedRootModule
-from transformer_lens.loading_from_pretrained import get_official_model_name
-from datasets import IterableDataset, Dataset, load_from_disk
+from datasets import load_from_disk
 import torch
 from torch.nn import Identity
 from torch.utils.data import DataLoader
@@ -13,21 +11,10 @@ from sentence_transformers import SentenceTransformer
 from transformers import (
     AutoTokenizer,
     DataCollatorWithPadding,
-    AutoConfig,
     PreTrainedModel,
 )
 
 
-tl_model_names = {
-    "llama": "meta-llama/Llama-3.1-8B-Instruct",
-    "qwen": "Qwen2.5-7B-Instruct",
-    "mistral": "mistral-7b-instruct",
-    "phi": "phi-3",
-}
-
-
-def get_hf_model_name(tl_model_name: str) -> str:
-    return get_official_model_name(tl_model_name)
 
 
 code_words = [
@@ -255,7 +242,7 @@ def create_datasets(
     model = model.to("cuda")
 
     # workaround for HF Transformers output_hidden_states=True cacheing the final layer hidden state after the final LN which is not a part of the residual stream
-    # Norm module is the final LN in modern HF transformers models see Qwen2Model for example https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2/modeling_qwen2.py#L340 
+    # Norm module is the final LN in modern HF transformers models see Qwen2Model for example https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2/modeling_qwen2.py#L340
     if not hasattr(model.model, "norm"):
         raise ValueError("HF WORKAROUND: Could not find final norm module in model")
     identity = Identity()
@@ -285,7 +272,7 @@ def create_datasets(
     for i in range(num_iterations):
         inputs = next(data_loader_iter)
         inputs = {key: val.to("cuda") for key, val in inputs.items()}
-        
+
         # forward pass for hidden states
         model.model.norm = identity  # remove final LN for residual stream extraction
         with torch.no_grad():
@@ -308,7 +295,9 @@ def create_datasets(
         # generate responses
         # restore the final LN
         model.model.norm = final_ln_module
-        responses = generate(**inputs, model=model, eos_token_id=tokenizer.eos_token_id)  # [batch, gen_len]
+        responses = generate(
+            **inputs, model=model, eos_token_id=tokenizer.eos_token_id
+        )  # [batch, gen_len]
         Ys["response_token_ids"].append(responses.cpu())
 
         # record length
