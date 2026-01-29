@@ -2,7 +2,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import Dataset
-from ..probes import create_datasets
+from sae.probes import create_datasets
 import tempfile
 import os
 

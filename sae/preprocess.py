@@ -75,7 +75,7 @@ if __name__ == "__main__":
     # disable_progress_bar()
     dataset_name = "allenai/WildChat-1M"
     for model_name in [
-        "Qwen/Qwen2.5-0.5B-Instruct",
+        # "Qwen/Qwen2.5-0.5B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",
         "google/gemma-2-9b-it",
         "meta-llama/Llama-3.1-8B-Instruct",
