@@ -13,6 +13,7 @@ from transformers import (
     DataCollatorWithPadding,
     PreTrainedModel,
 )
+from tqdm import tqdm
 
 
 def fit_estimator(X: torch.Tensor, Y: torch.Tensor, task_type="regression"):
@@ -221,7 +222,7 @@ def create_datasets(
     acts_cache = defaultdict(
         lambda: defaultdict(list)
     )  # pooling_strategy -> layer_idx -> Tensor
-    for i in range(num_iterations):
+    for _ in tqdm(range(num_iterations), desc="Batches"):
         inputs = next(data_loader_iter)
         inputs = {key: val.to("cuda") for key, val in inputs.items()}
 
@@ -262,8 +263,6 @@ def create_datasets(
         # record length
         lengths = compute_response_length(responses, tokenizer.eos_token_id)  # [batch]
         Ys["lengths"].append(lengths.cpu())
-
-        print(f"Processed batch {i + 1}/{num_iterations}", file=sys.stderr)
 
     # concatenate batches
     Xs_out = defaultdict(dict)
