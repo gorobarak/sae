@@ -191,7 +191,7 @@ def create_datasets(
         - "pred_tokens_mass": Y["pred_tokens_mass"] is -log token mass tensor for given token ids
         - "pred_lengths": Y["pred_lengths"] is response lengths tensor
 
-    Assumes dataset was preprocessed and has "input_ids" key which is tokenized input in chat format, and input_ids is bounded by some L_max.
+    Assumes dataset was preprocessed and has "input_ids" key which is tokenized input in chat format, and input_ids length is bounded by some L_max.
     Preprocessd dataset should be in data/preprocessed/{dataset_name}/{model_name}_L={L_max}
     """
 
@@ -272,7 +272,7 @@ def create_datasets(
             Xs_out[strat][layer_idx] = torch.cat(acts_cache[strat][layer_idx], dim=0)
 
     Ys_out = {}
-    for label_name, label_value in Ys.items():
+    for label_name in Ys.keys():
         Ys_out[label_name] = torch.cat(Ys[label_name], dim=0)
 
     return Xs_out, Ys_out
