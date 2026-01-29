@@ -14,6 +14,9 @@ def preprocess(dataset_name: str, model_name: str, L_max: int = 256):
     print(f"Loading dataset {dataset_name}")
     dataset = load_dataset(dataset_name, split="train", streaming=False)
 
+    print("Filtering non english conversations")
+    dataset = dataset.filter(lambda row: row["language"] == "English")
+
     def tokenize_example(row: dict) -> dict:
         new_conv = []
         new_conv.append(row["conversation"][0])  # keep only the first message
@@ -28,7 +31,6 @@ def preprocess(dataset_name: str, model_name: str, L_max: int = 256):
         assert isinstance(tokens, list), "tokens is not type of list"
         assert not isinstance(tokens[0], list), "tokens is a nested list"
         return {"input_ids": tokens, "length": len(tokens), "conversation": new_conv}
-
     print("tokenizing only the initial user message")
     tokenized_dataset = dataset.map(tokenize_example)
 
@@ -70,14 +72,14 @@ def preprocess(dataset_name: str, model_name: str, L_max: int = 256):
 
 
 if __name__ == "__main__":
-    disable_progress_bar()
+    # disable_progress_bar()
     dataset_name = "allenai/WildChat-1M"
     for model_name in [
         "Qwen/Qwen2.5-0.5B-Instruct",
-        # "Qwen/Qwen2.5-7B-Instruct",
-        # "google/gemma-2-9b-it",
-        # "meta-llama/Llama-3.1-8B-Instruct",
-        # "mistralai/Ministral-8B-Instruct-2410",
+        "Qwen/Qwen2.5-7B-Instruct",
+        "google/gemma-2-9b-it",
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "mistralai/Ministral-8B-Instruct-2410",
     ]:
         print(f"Preprocessing {dataset_name} for model: {model_name}")
         preprocess(dataset_name=dataset_name, model_name=model_name, L_max=256)

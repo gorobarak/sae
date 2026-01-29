@@ -254,7 +254,7 @@ def create_datasets(
                 acts_cache[pooling_strategy][layer_idx].append(to_save.cpu())
         prompt_len = inputs["input_ids"].shape[1]
         responses = generation_output["sequences"][
-            :, prompt_len
+            :, prompt_len:
         ]  # [batch, max_response_len]
 
         Ys["response_token_ids"].append(responses.cpu())
@@ -266,7 +266,7 @@ def create_datasets(
         print(f"Processed batch {i + 1}/{num_iterations}", file=sys.stderr)
 
     # concatenate batches
-    Xs_out = {}
+    Xs_out = defaultdict(dict)
     for strat in pooling_strategies:
         for layer_idx in range(model.config.num_hidden_layers):
             Xs_out[strat][layer_idx] = torch.cat(acts_cache[strat][layer_idx], dim=0)
