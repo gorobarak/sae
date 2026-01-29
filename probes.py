@@ -15,46 +15,6 @@ from transformers import (
 )
 
 
-
-
-code_words = [
-    "def",
-    "class",
-    "import",
-    "return",
-    "lambda",
-    "async",
-    "await",
-    "func",
-    "var",
-    "let",
-    "const",
-    "null",
-    "struct",
-    "enum",
-    "include",
-    "template",
-    "typename",
-]
-
-math_words = [
-    "assume",
-    "let",
-    "therefore",
-    "hence",
-    "thus",
-    "suppose",
-    "expand",
-    "differentiate",
-    "integrate",
-    "factor",
-    "solve",
-    "substitute",
-    "equation",
-    "expression",
-]
-
-
 def fit_estimator(X: torch.Tensor, Y: torch.Tensor, task_type="regression"):
     est = None
     if task_type == "regression":
@@ -161,10 +121,8 @@ def eval_baseline(
     return relative_error, score
 
 
-def compute_relative_error(Y_pred: torch.Tensor, Y_test: torch.Tensor) -> float:
-    relative_error = (
-        torch.mean(torch.abs(Y_test - Y_pred) / (Y_test + 1e-10)).item() * 100
-    )
+def compute_relative_error(Y_pred: torch.Tensor, Y: torch.Tensor) -> float:
+    relative_error = torch.mean(torch.abs(Y - Y_pred) / (Y + 1e-10)).item() * 100
     return relative_error
 
 
@@ -216,20 +174,18 @@ def convert_conversations_to_texts(conversations: list[list[dict]]) -> list[str]
 
 def create_datasets(
     model: PreTrainedModel,
-    tl_model_name: str,
+    model_name: str,
     tokenizer: AutoTokenizer,
     dataset_name: str,
     pooling_strategies: list[str] = ["last"],
-    tokens_ids: list[int] = None,
     dataset_size: int = int(1e4),
-    record_nll_telemetry: bool = True,
-    record_tokens_mass_telemetry: bool = True,
-    record_length_telemetry: bool = True,
     batch_size: int = 32,
+    max_new_tokens: int = 1024,
     L_max: int = 256,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """
-    Creates tensor X of residual stream activation for every layer using the pooling strategy pooling_strategy
+    Creates dict of tensors X of residual stream activation for every layer for every pooling strategy in pooling_strategies
+        - X[pooling_strategy][layer_idx] is tensor of activations for given layer and pooling strategy of shape [dataset_size, d_model]
     Creates dict of tensors Y with keys the different tasks
         - "pred_perplexity": Y["pred_perplexity"] is perplexity tensor
         - "pred_tokens_mass": Y["pred_tokens_mass"] is -log token mass tensor for given token ids
@@ -239,25 +195,21 @@ def create_datasets(
     Preprocessd dataset should be in data/preprocessed/{dataset_name}/{model_name}_L={L_max}
     """
 
-    model = model.to("cuda")
-
-    # workaround for HF Transformers output_hidden_states=True cacheing the final layer hidden state after the final LN which is not a part of the residual stream
+    # workaround for HF Transformers output_hidden_states=True caching the final layer hidden state after the final LN which is not a part of the residual stream
     # Norm module is the final LN in modern HF transformers models see Qwen2Model for example https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2/modeling_qwen2.py#L340
-    if not hasattr(model.model, "norm"):
-        raise ValueError("HF WORKAROUND: Could not find final norm module in model")
-    identity = Identity()
-    final_ln_module = model.model.norm
+    # if not hasattr(model.model, "norm"):
+    #     raise ValueError("HF WORKAROUND: Could not find final norm module in model")
+    # identity = Identity()
+    # final_ln_module = model.model.norm
 
     # load dataset
-    dataset = load_from_disk(
-        f"data/preprocessed/{dataset_name}/{tl_model_name}_L={L_max}"
-    )
+    dataset = load_from_disk(f"data/preprocessed/{dataset_name}/{model_name}_L={L_max}")
     dataset = dataset.remove_columns(
         [col for col in dataset.column_names if col not in ["input_ids"]]
     )  # keep only input_ids for batching
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left"  # so the last act corresponds to the last token
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token = tokenizer.eos_token  # incase pad token is not defined
     collator = DataCollatorWithPadding(tokenizer=tokenizer, padding="longest")
     dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
     data_loader_iter = iter(dataloader)
@@ -265,39 +217,46 @@ def create_datasets(
     dataset_size = min(len(dataset), dataset_size)
     num_iterations = dataset_size // batch_size
 
-    Ys = defaultdict(list)
-    acts_per_layer_per_pooling = defaultdict(
+    Ys = defaultdict(list)  # label_name -> label_values
+    acts_cache = defaultdict(
         lambda: defaultdict(list)
-    )  # layer_idx -> pooling_strategy -> list of tensors
+    )  # pooling_strategy -> layer_idx -> Tensor
     for i in range(num_iterations):
         inputs = next(data_loader_iter)
         inputs = {key: val.to("cuda") for key, val in inputs.items()}
 
-        # forward pass for hidden states
-        model.model.norm = identity  # remove final LN for residual stream extraction
-        with torch.no_grad():
-            output = model(**inputs, output_hidden_states=True)
-            hidden_states = output.hidden_states[
-                1:
-            ]  # exclude embedding layer, list of [batch, seq_len, d_model]
+        generation_output = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+            output_hidden_states=True,
+            return_dict_in_generate=True,
+        )
+        # generation_output["hidden_states"] has the shape [generation_length/num forward passes, num_layers + 1, batch, seq_len, hidden_dim]
+        # generation_length/num forward passes, num_layers + 1 are tuples
+        # first forward pass has seq_len == prompt_len, subsequent forward passes has seq_len == 1 for the decoding stage
+        # There is num_layers + 1 because the first hidden states are after the embedding layer
+        # Consider not taking last hidden state becuase it is after the final layer norm
 
-        # record acts based on pooling strategy
-        for layer_idx in range(model.config.num_hidden_layers):
-            acts = hidden_states[layer_idx]  # [batch, seq_len, d_model]
-            for pooling_strategy in pooling_strategies:
-                acts_to_save = pool_activations(
+        # We care only for the prompt's hidden states
+        hidden_states = generation_output["hidden_states"][0]
+        # discard embeddins layer hidden states
+        hidden_states = hidden_states[1:]
+
+        # record acts
+        for pooling_strategy in pooling_strategies:
+            for layer_idx in range(model.config.num_hidden_layers):
+                acts = hidden_states[layer_idx]  # [batch, seq_len, d_model]
+                to_save = pool_activations(
                     acts, inputs["attention_mask"], pooling_strategy
                 )  # [batch, d_model]
-                acts_per_layer_per_pooling[layer_idx][pooling_strategy].append(
-                    acts_to_save.cpu()
-                )  # [batch, d_model]
+                acts_cache[pooling_strategy][layer_idx].append(to_save.cpu())
+        prompt_len = inputs["input_ids"].shape[1]
+        responses = generation_output["sequences"][
+            :, prompt_len
+        ]  # [batch, max_response_len]
 
-        # generate responses
-        # restore the final LN
-        model.model.norm = final_ln_module
-        responses = generate(
-            **inputs, model=model, eos_token_id=tokenizer.eos_token_id
-        )  # [batch, gen_len]
         Ys["response_token_ids"].append(responses.cpu())
 
         # record length
@@ -306,22 +265,17 @@ def create_datasets(
 
         print(f"Processed batch {i + 1}/{num_iterations}", file=sys.stderr)
 
-    for layer_idx, pooling_dict in acts_per_layer_per_pooling.items():
-        for pooling_strategy, acts_list in pooling_dict.items():
-            acts_tensor = torch.cat(acts_list, dim=0)  # [dataset_size, d_model]
-            acts_per_layer_per_pooling[layer_idx][pooling_strategy] = (
-                acts_tensor  # [dataset_size, d_model]
-            )
-    Ys_cat = {}
-    for label_name, lst_tensors in Ys.items():
-        if label_name == "response_token_ids":
-            Ys_cat[label_name] = concat_tensors_of_different_lengths(
-                lst_tensors, padding_value=tokenizer.eos_token_id
-            )  # [dataset_size, max_gen_len]
-        else:
-            Ys_cat[label_name] = torch.cat(lst_tensors, dim=0)  # [dataset_size]
+    # concatenate batches
+    Xs_out = {}
+    for strat in pooling_strategies:
+        for layer_idx in range(model.config.num_hidden_layers):
+            Xs_out[strat][layer_idx] = torch.cat(acts_cache[strat][layer_idx], dim=0)
 
-    return acts_per_layer_per_pooling, Ys_cat
+    Ys_out = {}
+    for label_name, label_value in Ys.items():
+        Ys_out[label_name] = torch.cat(Ys[label_name], dim=0)
+
+    return Xs_out, Ys_out
 
 
 def pool_activations(
@@ -385,25 +339,6 @@ def record_nll(
     counts = att_mask.sum(dim=-1).clamp(min=1)  # [batch]
     mean_nll = sums / counts  # [batch]
     return mean_nll
-
-
-def generate(
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
-    model: PreTrainedModel,
-    eos_token_id: int,
-    max_new_tokens: int = 2048,
-) -> torch.Tensor:
-    query_length = input_ids.shape[1]
-    response = model.generate(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        max_new_tokens=max_new_tokens,  # max generation length
-        do_sample=False,  # greedy decoding for reproducibility
-        pad_token_id=eos_token_id,  # so we can know if a generation was truncated
-    )  # [batch, query_length + gen_len]
-    response_without_query = response[:, query_length:]  # [batch, gen_len]
-    return response_without_query
 
 
 def compute_response_length(responses: torch.Tensor, eos_token_id: int) -> torch.Tensor:
