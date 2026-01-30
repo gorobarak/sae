@@ -210,7 +210,7 @@ def create_datasets(
     )  # keep only input_ids for batching
     dataset = dataset.shuffle(seed=42)
     tokenizer.padding_side = "left"  # so the last act corresponds to the last token
-    tokenizer.pad_token = tokenizer.eos_token  # incase pad token is not defined
+    tokenizer.pad_token = tokenizer.eos_token  # in case pad token is not defined
     collator = DataCollatorWithPadding(tokenizer=tokenizer, padding="longest")
     dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator)
     data_loader_iter = iter(dataloader)
@@ -272,7 +272,12 @@ def create_datasets(
 
     Ys_out = {}
     for label_name in Ys.keys():
-        Ys_out[label_name] = torch.cat(Ys[label_name], dim=0)
+        if label_name == "response_token_ids":
+            Ys_out[label_name] = concat_tensors_of_different_lengths(
+                Ys[label_name], padding_value=tokenizer.eos_token_id
+            )
+        else:
+            Ys_out[label_name] = torch.cat(Ys[label_name], dim=0)
 
     return Xs_out, Ys_out
 
