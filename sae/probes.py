@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 import sys
 from datasets import load_from_disk
 import torch
@@ -9,6 +10,7 @@ from sklearn.model_selection import train_test_split
 import os
 from sentence_transformers import SentenceTransformer
 from transformers import (
+    AutoConfig,
     AutoTokenizer,
     DataCollatorWithPadding,
     PreTrainedModel,
@@ -18,8 +20,12 @@ from tqdm import tqdm
 
 def fit_estimator(X: torch.Tensor, Y: torch.Tensor, task_type="regression"):
     est = None
+    X = X.to(torch.float32)
+    Y = Y.to(torch.float32)
     if task_type == "regression":
-        ridge = Ridge(alpha=1.0)
+        ridge = (
+            Ridge()
+        )  # default hyperparameters specifically L2 regularization coefficient = 1.0
         ridge.fit(X, Y)
         est = ridge
     elif task_type == "classification":
@@ -39,33 +45,36 @@ def eval(
     project_dim=None,
     pooling_strategy="last",
 ):
-    # load labels
-    Y = torch.load(
-        f"data/pred_gen/{dataset}/{model_name}/Y_{task}.pt"
-    )  # [dataset_size]
+    BASE_PATH = "/home/yandex/APDL2425a/group_12/gorodissky/sae/data"
+    path = f"{BASE_PATH}/{task}/{dataset}/{model_name}"
+    cpts = os.listdir(path)
+    cpts = sorted(
+        cpts, key=lambda version: datetime.strptime(version, "%Y_%m_%d-%H:%M")
+    )
+    latest_cpt = cpts[-1]
+    path = os.path.join(path, latest_cpt)
 
-    # load acts
-    path = f"data/pred_gen/{dataset}/{model_name}"
-    layers = [
-        int(folder.split("_")[1])
-        for folder in os.listdir(path)
-        if os.path.isdir(os.path.join(path, folder))
-    ]
-    layers = sorted(layers)
+    Y = torch.load(f"{path}/Y_{task}.pt").to(torch.float32)  # [dataset_size]
+    num_examples = Y.shape[0]
+    valid_mask = Y != -1
+    print("Number of valid examples:", valid_mask.sum().item(), " / ", num_examples)
+    Y = Y[valid_mask]
+
+    cfg = AutoConfig.from_pretrained(model_name)
+    num_layers = cfg.num_hidden_layers
     rel_errs = []
     r2_scores = []
-    for layer in layers:
-        cur_Y = Y.clone()
-        X_name = f"X{('_' + pooling_strategy) if pooling_strategy else ''}.pt"
-        X = torch.load(f"{path}/layer_{layer}/{X_name}")  # [dataset_size, hidden_dim]
-        X = X[: cur_Y.shape[0], :]  # take only as many examples as in Y
-        X, cur_Y, num_valid_examples = filter_valid_examples(X, cur_Y)
+    
+    for layer in range(num_layers):
+
+        X = torch.load(f"{path}/X_{pooling_strategy}_layer={layer}.pt").to(torch.float32)  # [dataset_size, hidden_dim]
+        X = X[valid_mask]
 
         if project_dim is not None:
             X = project(X, project_dim)
 
         X_train, X_test, Y_train, Y_test = train_test_split(
-            X, cur_Y, test_size=0.2, random_state=42
+            X, Y, test_size=0.2, random_state=42
         )
         estimator = fit_estimator(X_train, Y_train, task_type)
 
@@ -78,12 +87,12 @@ def eval(
         score = estimator.score(X_test, Y_test)
 
         print(
-            f"Layer: {layer}, rel_err (reg only): {relative_error:.2f}%, score (R^2 for reg /acc for clf): {score:.4f}"
+            f"Layer: {layer}, rel_err (reg only): {relative_error:.2f}%, score (R^2 for reg /acc for clf): {score:.2f}"
         )
         rel_errs.append(relative_error)
         r2_scores.append(score)
 
-    return layers, rel_errs, r2_scores
+    return list(range(num_layers)), rel_errs, r2_scores
 
 
 def eval_baseline(
@@ -396,5 +405,5 @@ def filter_valid_examples(
     valid_mask = Y != -1
     X_filtered = X[valid_mask]
     Y_filtered = Y[valid_mask]
-    num_valid_examples = X_filtered.shape[0]
+    num_valid_examples = valid_mask.sum().item()
     return X_filtered, Y_filtered, num_valid_examples

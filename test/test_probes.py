@@ -221,3 +221,88 @@ def test_create_datasets_device_handling(setup_model_and_tokenizer, create_mock_
         "Lengths tensor should be on CPU"
     assert Y["response_token_ids"].device == torch.device("cpu"), \
         "Response token IDs should be on CPU"
+
+
+def test_create_datasets_long_and_short_answers(setup_model_and_tokenizer, monkeypatch):
+    """Test that create_datasets handles mixed short and long responses in the same batch."""
+    model, tokenizer, model_name = setup_model_and_tokenizer
+    
+    # Create dataset with prompts that will likely generate different length responses
+    # Mix short and long prompts to test batch handling
+    sample_data = {
+        "input_ids": [
+            tokenizer.encode("Say yes.", add_special_tokens=True),  # Short
+            tokenizer.encode("Write a detailed explanation of machine learning.", add_special_tokens=True),  # Long
+            tokenizer.encode("What is 2+2?", add_special_tokens=True),  # Short
+            tokenizer.encode("Describe the history of computer science in detail.", add_special_tokens=True),  # Long
+            tokenizer.encode("No.", add_special_tokens=True),  # Very short
+            tokenizer.encode("Explain quantum mechanics, relativity, and string theory.", add_special_tokens=True),  # Long
+        ]
+    }
+    
+    dataset = Dataset.from_dict(sample_data)
+    
+    # Save to temporary directory
+    dataset_name = "test_mixed_lengths"
+    L_max = 256
+    temp_dir = tempfile.mkdtemp()
+    save_path = f"{temp_dir}/data/preprocessed/{dataset_name}/{model_name}_L={L_max}"
+    os.makedirs(save_path, exist_ok=True)
+    dataset.save_to_disk(save_path)
+    
+    monkeypatch.chdir(temp_dir)
+    
+    # Process all samples in batches that will contain both short and long responses
+    num_samples = len(sample_data["input_ids"])
+    batch_size = 3  # Each batch will have mixed lengths
+    
+    X, Y = create_datasets(
+        model=model,
+        model_name=model_name,
+        tokenizer=tokenizer,
+        dataset_name=dataset_name,
+        dataset_size=num_samples,
+        batch_size=batch_size,
+        max_new_tokens=50,
+        L_max=L_max
+    )
+    
+    # Check that we got results for all samples
+    assert Y["lengths"].shape[0] == num_samples, \
+        f"Should have {num_samples} responses, got {Y['lengths'].shape[0]}"
+    assert Y["response_token_ids"].shape[0] == num_samples, \
+        f"Should have {num_samples} response token IDs"
+    
+    # Check that lengths vary (we should have both short and long responses)
+    lengths = Y["lengths"]
+    valid_lengths = lengths[lengths > 0]  # Exclude truncated responses
+    
+    if len(valid_lengths) > 1:
+        min_length = valid_lengths.min().item()
+        max_length = valid_lengths.max().item()
+        
+        # We should have variation in response lengths
+        assert max_length > min_length, \
+            f"Expected variation in response lengths, but got min={min_length}, max={max_length}"
+        
+        # Check that the range is reasonable (not all identical)
+        assert max_length >= min_length * 2, \
+            "Expected significant variation between short and long responses"
+    
+    # Verify all activations have correct shapes
+    for layer_idx in range(model.config.num_hidden_layers):
+        acts = X["last"][layer_idx]
+        assert acts.shape[0] == num_samples, \
+            f"Layer {layer_idx}: Expected {num_samples} samples, got {acts.shape[0]}"
+        assert acts.shape[1] == model.config.hidden_size, \
+            f"Layer {layer_idx}: Expected hidden size {model.config.hidden_size}, got {acts.shape[1]}"
+    
+    # Check that each response token IDs tensor has the correct shape
+    for i in range(num_samples):
+        response = Y["response_token_ids"][i]
+        length = Y["lengths"][i].item()
+        
+        if length > 0:  # Not truncated
+            # Response should have length <= max_new_tokens
+            assert response.shape[0] <= 50, \
+                f"Response {i} length {response.shape[0]} exceeds max_new_tokens=50"
