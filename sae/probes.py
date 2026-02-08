@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime
+import gc
 import sys
 from datasets import load_from_disk
 import torch
@@ -11,11 +12,14 @@ import os
 from sentence_transformers import SentenceTransformer
 from transformers import (
     AutoConfig,
+    AutoModelForCausalLM,
     AutoTokenizer,
     DataCollatorWithPadding,
     PreTrainedModel,
 )
 from tqdm import tqdm
+import pandas as pd
+from adais.datasets import dataset, mmlu_pro
 
 
 def fit_estimator(X: torch.Tensor, Y: torch.Tensor, task_type="regression"):
@@ -64,10 +68,11 @@ def eval(
     num_layers = cfg.num_hidden_layers
     rel_errs = []
     r2_scores = []
-    
-    for layer in range(num_layers):
 
-        X = torch.load(f"{path}/X_{pooling_strategy}_layer={layer}.pt").to(torch.float32)  # [dataset_size, hidden_dim]
+    for layer in range(num_layers):
+        X = torch.load(f"{path}/X_{pooling_strategy}_layer={layer}.pt").to(
+            torch.float32
+        )  # [dataset_size, hidden_dim]
         X = X[valid_mask]
 
         if project_dim is not None:
@@ -407,3 +412,104 @@ def filter_valid_examples(
     Y_filtered = Y[valid_mask]
     num_valid_examples = valid_mask.sum().item()
     return X_filtered, Y_filtered, num_valid_examples
+
+
+def load_dataset(dataset_name: str) -> dataset.Dataset:
+    match dataset_name:
+        case "MMLU":
+            ds = mmlu_pro.get_dataset()
+        case _:
+            raise ValueError(f"Unknown dataset name: {dataset_name}")
+    return ds
+
+
+def generate_questions_answers_dataset(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    dataset_name: str,
+    dataset_size: int,
+    seed: int = 42,
+    batch_size: int = 32,
+):
+    ds = load_dataset(dataset_name)
+    df = ds.data
+    num_rows = min(len(df), dataset_size)
+    df = df.sample(n=num_rows, random_state=seed, ignore_index=True)
+    df["question"] = df["question"].apply(
+        ds.format_question
+    )  # format question as prompt
+    df["answer"] = None
+    df["activation_pre_mid"] = None
+    df["activation_mid"] = None
+    df["activation_post_mid"] = None
+    mid_layer = model.config.num_hidden_layers // 2
+    for i in tqdm(range(0, num_rows, batch_size)):
+        end_idx = min(i + batch_size, num_rows)
+        batch = df.iloc[i:end_idx]
+        questions = batch["question"].tolist()
+        questions_chat_formatted = [[{"role": "user", "content": q}] for q in questions]
+        tokenizer.padding_side = "left"
+        tokenizer.pad_token = tokenizer.eos_token
+        inputs = tokenizer.apply_chat_template(
+            questions_chat_formatted,
+            padding="longest",
+            add_generation_prompt=True,
+            tokenize=True,
+            return_tensors="pt",
+            return_dict=True,
+        )
+        inputs = {key: val.to("cuda") for key, val in inputs.items()}
+
+        generation_output = model.generate(
+            **inputs,
+            max_new_tokens=1024,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+            output_hidden_states=True,
+            output_scores=True,
+            return_dict_in_generate=True,
+        )
+        output_tokens = generation_output["sequences"].cpu()
+        responses = output_tokens[:, inputs["input_ids"].shape[1] :]
+        answers = tokenizer.batch_decode(responses, skip_special_tokens=True)
+        answer_col_idx = df.columns.get_loc("answer")
+        df.iloc[i:end_idx, answer_col_idx] = answers
+
+        hidden_states = generation_output["hidden_states"]
+        hidden_states = hidden_states[
+            0
+        ]  # take hidden states from the first forward pass only
+        hidden_states = hidden_states[1:]  # discard embedding layer hidden states
+        hidden_states = torch.stack(
+            hidden_states, dim=0
+        )  # [num_layers, batch, seq_len, hidden_dim]
+
+        acts_pre_mid = (
+            hidden_states[mid_layer - 1, :, -1, :].cpu().to(torch.float32).numpy()
+        )
+        acts_mid = hidden_states[mid_layer, :, -1, :].cpu().to(torch.float32).numpy()
+        acts_post_mid = (
+            hidden_states[mid_layer + 1, :, -1, :].cpu().to(torch.float32).numpy()
+        )
+
+        assert acts_mid.shape[-1] == model.config.hidden_size, (
+            "Hidden state dimension does not match model config hidden size"
+        )
+
+        # set activation one by one
+        acts_pre_mid_col_idx = df.columns.get_loc("activation_pre_mid")
+        acts_mid_col_idx = df.columns.get_loc("activation_mid")
+        acts_post_mid_col_idx = df.columns.get_loc("activation_post_mid")
+        for j, act_pre, act_mid, act_post in zip(
+            range(i, end_idx), acts_pre_mid, acts_mid, acts_post_mid
+        ):
+            df.iat[j, acts_pre_mid_col_idx] = act_pre
+            df.iat[j, acts_mid_col_idx] = act_mid
+            df.iat[j, acts_post_mid_col_idx] = act_post
+
+        # clear GPU memory
+        del inputs, generation_output
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    return df
