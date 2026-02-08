@@ -5,6 +5,9 @@ from datasets import Dataset
 from sae.probes import create_datasets
 import tempfile
 import os
+import pandas as pd
+import numpy as np
+from types import SimpleNamespace
 
 
 @pytest.fixture
@@ -306,3 +309,105 @@ def test_create_datasets_long_and_short_answers(setup_model_and_tokenizer, monke
             # Response should have length <= max_new_tokens
             assert response.shape[0] <= 50, \
                 f"Response {i} length {response.shape[0]} exceeds max_new_tokens=50"
+
+
+class _DummyDataset:
+    def __init__(self):
+        self.data = pd.DataFrame(
+            {
+                "question": ["Q1", "Q2", "Q3"],
+                "meta": [1, 2, 3],
+            }
+        )
+
+    def format_question(self, question: str) -> str:
+        return f"Q: {question}"
+
+
+class _DummyTokenizer:
+    def __init__(self, prompt_len: int = 5):
+        self.prompt_len = prompt_len
+        self.padding_side = "left"
+        self.pad_token = "<pad>"
+        self.eos_token = "<eos>"
+        self.eos_token_id = 0
+
+    def apply_chat_template(
+        self,
+        questions_chat_formatted,
+        padding,
+        add_generation_prompt,
+        tokenize,
+        return_tensors,
+        return_dict,
+    ):
+        batch = len(questions_chat_formatted)
+        input_ids = torch.ones((batch, self.prompt_len), dtype=torch.long)
+        attention_mask = torch.ones_like(input_ids)
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    def batch_decode(self, responses, skip_special_tokens=True):
+        return [f"answer_{i}" for i in range(responses.shape[0])]
+
+
+class _DummyModel:
+    def __init__(self, num_layers: int = 4, hidden_size: int = 6):
+        self.config = SimpleNamespace(
+            num_hidden_layers=num_layers,
+            hidden_size=hidden_size,
+        )
+
+    def generate(self, input_ids=None, **kwargs):
+        batch, prompt_len = input_ids.shape
+        gen_len = 3
+        device = input_ids.device
+        sequences = torch.arange(batch * (prompt_len + gen_len), device=device).view(
+            batch, prompt_len + gen_len
+        )
+
+        layer_states = []
+        for _ in range(self.config.num_hidden_layers + 1):
+            layer_states.append(
+                torch.zeros(
+                    (batch, prompt_len, self.config.hidden_size), device=device
+                )
+            )
+
+        return {
+            "sequences": sequences,
+            "hidden_states": (tuple(layer_states),),
+        }
+
+
+def test_generate_questions_answers_dataset_returns_expected(monkeypatch):
+    from sae import probes
+
+    monkeypatch.setattr(probes, "load_dataset", lambda _: _DummyDataset())
+    monkeypatch.setattr(torch.Tensor, "to", lambda self, *args, **kwargs: self)
+
+    model = _DummyModel()
+    tokenizer = _DummyTokenizer()
+
+    df = probes.generate_questions_answers_dataset(
+        model=model,
+        tokenizer=tokenizer,
+        dataset_name="MMLU",
+        dataset_size=2,
+        batch_size=2,
+    )
+
+    assert len(df) == 2
+    assert {
+        "question",
+        "answer",
+        "activation_pre_mid",
+        "activation_mid",
+        "activation_post_mid",
+    }.issubset(df.columns)
+    assert df["question"].iloc[0].startswith("Q: ")
+    assert df["answer"].notna().all()
+
+    activation = df["activation_mid"].iloc[0]
+    assert isinstance(activation, np.ndarray)
+    assert activation.shape == (model.config.hidden_size,)
+    assert activation.dtype == np.float32
