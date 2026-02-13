@@ -51,11 +51,7 @@ def eval(
 ):
     BASE_PATH = "/home/yandex/APDL2425a/group_12/gorodissky/sae/data"
     path = f"{BASE_PATH}/{task}/{dataset}/{model_name}"
-    cpts = os.listdir(path)
-    cpts = sorted(
-        cpts, key=lambda version: datetime.strptime(version, "%Y_%m_%d-%H:%M")
-    )
-    latest_cpt = cpts[-1]
+    latest_cpt = get_latest_cpt(path)
     path = os.path.join(path, latest_cpt)
 
     Y = torch.load(f"{path}/Y_{task}.pt").to(torch.float32)  # [dataset_size]
@@ -67,13 +63,13 @@ def eval(
     cfg = AutoConfig.from_pretrained(model_name)
     num_layers = cfg.num_hidden_layers
     rel_errs = []
-    r2_scores = []
+    scores = []
 
     for layer in range(num_layers):
         X = torch.load(f"{path}/X_{pooling_strategy}_layer={layer}.pt").to(
             torch.float32
         )  # [dataset_size, hidden_dim]
-        X = X[valid_mask]
+        X = X[valid_mask] # take only valid examples
 
         if project_dim is not None:
             X = project(X, project_dim)
@@ -95,9 +91,9 @@ def eval(
             f"Layer: {layer}, rel_err (reg only): {relative_error:.2f}%, score (R^2 for reg /acc for clf): {score:.2f}"
         )
         rel_errs.append(relative_error)
-        r2_scores.append(score)
+        scores.append(score)
 
-    return list(range(num_layers)), rel_errs, r2_scores
+    return list(range(num_layers)), rel_errs, scores
 
 
 def eval_baseline(
@@ -417,7 +413,7 @@ def filter_valid_examples(
 def load_dataset(dataset_name: str) -> dataset.Dataset:
     match dataset_name:
         case "MMLU":
-            ds = mmlu_pro.get_dataset()
+            ds = mmlu_pro.get_dataset(validation=True)
         case _:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
     return ds
@@ -513,3 +509,11 @@ def generate_questions_answers_dataset(
         torch.cuda.empty_cache()
 
     return df
+
+
+def get_latest_cpt(path: str):
+    cpts = os.listdir(path)
+    cpts = sorted(
+        cpts, key=lambda version: datetime.strptime(version, "%Y_%m_%d-%H:%M")
+    )
+    return cpts[-1]
