@@ -24,3 +24,4 @@ data/
 *.log
 main.py
 *.egg-info/
+sae/playground.ipynb
