@@ -652,3 +652,6 @@ def normalize_str(s):
     if pd.isna(s):
         return ""
     return re.sub(r"\W", "", s)
+
+def get_current_timestamp():
+    return datetime.now().strftime("%Y_%m_%d-%H:%M")
