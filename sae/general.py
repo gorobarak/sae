@@ -438,7 +438,7 @@ def generate_questions_answers_dataset(
     df["question"] = df["question"].apply(
         ds.format_question
     )  # format question as prompt
-    df["answer"] = None
+    df["response"] = None
     df["activation_pre_mid"] = None
     df["activation_mid"] = None
     df["activation_post_mid"] = None
@@ -470,10 +470,12 @@ def generate_questions_answers_dataset(
             return_dict_in_generate=True,
         )
         output_tokens = generation_output["sequences"].cpu()
-        responses = output_tokens[:, inputs["input_ids"].shape[1] :]
-        answers = tokenizer.batch_decode(responses, skip_special_tokens=True)
-        answer_col_idx = df.columns.get_loc("answer")
-        df.iloc[i:end_idx, answer_col_idx] = answers
+        response_tokens = output_tokens[
+            :, inputs["input_ids"].shape[1] :
+        ]  # discard prompt tokens
+        responses = tokenizer.batch_decode(response_tokens, skip_special_tokens=True)
+        response_col_idx = df.columns.get_loc("response")
+        df.iloc[i:end_idx, response_col_idx] = responses
 
         hidden_states = generation_output["hidden_states"]
         hidden_states = hidden_states[
@@ -512,6 +514,12 @@ def generate_questions_answers_dataset(
         gc.collect()
         torch.cuda.empty_cache()
 
+    df["answer"] = df["response"].apply(lambda res: ds.extract_answer(res)[0])
+
+    def is_correct(row):
+        return normalize_str(row["answer"]) == normalize_str(row["golden_label"])
+
+    df["is_correct"] = df.apply(is_correct, axis=1)
     return df
 
 
@@ -533,11 +541,12 @@ def stop_expr(
     cost_big: float,
     tokenizer_small: AutoTokenizer,
     tokenizer_big: AutoTokenizer,
-    threshold: float,
-    extract_answer_func: callable, 
+    c: float,
+    extract_answer_func: callable,
 ):
-    assert threshold >= 0 and threshold <= 1, "Threshold should be in [0, 1]"
-    assert len(qa_df_small) == len(qa_df_big), "Small and big QA dataframes should have the same number of Q&A"
+    assert len(qa_df_small) == len(qa_df_big), (
+        "Small and big QA dataframes should have the same number of Q&A"
+    )
     num_correct = 0
     total_qa = len(qa_df_small)
     tokens_small = 0
@@ -547,30 +556,51 @@ def stop_expr(
     for i in range(total_qa):
         qa_small = qa_df_small.iloc[i]
         qa_big = qa_df_big.iloc[i]
-        score = probe.score(np.expand_dims(qa_small["activation_mid"], axis=0))  # score is in [0, 1] higher means more likely to be correct
-        
-        tokens_small += len(tokenizer_small.encode(qa_small["question"])) # either way we pay for the small model prefill
-        if score > threshold:  # if threshold is 1.0 we always go to the big model
-            print(f"{i+1}/{total_qa}: Using small model {score:.4f} > {threshold}")
+        # score = probe.score(np.expand_dims(qa_small["activation_mid"], axis=0))  # score is in [0, 1] higher means more likely to be correct
+        acts = np.stack(
+            [
+                qa_small["activation_pre_mid"],
+                qa_small["activation_mid"],
+                qa_small["activation_post_mid"],
+            ],
+            axis=0,
+        )  # [3, hidden_dim]
+        act = np.mean(acts, axis=0)  # [hidden_dim]
+        dist_from_correct = np.linalg.norm(act - probe.correct_centroid)
+        dist_from_incorrect = np.linalg.norm(act - probe.incorrect_centroid)
+
+        tokens_small += len(
+            tokenizer_small.encode(qa_small["question"])
+        )  # either way we pay for the small model prefill
+        if dist_from_correct < c * dist_from_incorrect:  # use small
+            print(
+                f"{i + 1}/{total_qa}: Using small model {dist_from_correct:.4f} < {c * dist_from_incorrect:.4f}"
+            )
             used_small_counter += 1
             answer = qa_small["answer"]
             tokens_small += len(tokenizer_small.encode(answer))
-        else:
-            print(f"{i+1}/{total_qa}: Using big model {score:.4f} <={threshold}")
+        else:  # using big
+            print(
+                f"{i + 1}/{total_qa}: Using big model {dist_from_correct:.4f} >= {c * dist_from_incorrect:.4f}"
+            )
             answer = qa_big["answer"]
-            tokens_big += len(tokenizer_big.encode(qa_small["question"])) # we pay for the big model prefill as well because we have to feed the question to it to get the answer
+            tokens_big += len(
+                tokenizer_big.encode(qa_small["question"])
+            )  # we pay for the big model prefill as well because we have to feed the question to it to get the answer
             tokens_big += len(tokenizer_big.encode(answer))
 
         answer_letter = extract_answer_func(answer)[0]
         if normalize_str(answer_letter) == normalize_str(qa_small["golden_label"]):
             num_correct += 1
-        
-    if threshold == 1.0: # all questions go to the big model instantly we don't use the small model at all
-        tokens_small = 0
+
+    # if threshold == 1.0: # all questions go to the big model instantly we don't use the small model at all
+    #     tokens_small = 0
 
     accuracy = num_correct / total_qa
-    cost = (tokens_small * cost_small + tokens_big * cost_big)
-    return accuracy, cost, used_small_counter/total_qa
+    cost = tokens_small * cost_small + tokens_big * cost_big
+    return accuracy, cost, used_small_counter / total_qa
+
+
 def stop_expr_random_baseline(
     qa_df_small: pd.DataFrame,
     qa_df_big: pd.DataFrame,
@@ -579,8 +609,11 @@ def stop_expr_random_baseline(
     tokenizer_small: AutoTokenizer,
     tokenizer_big: AutoTokenizer,
     extract_answer_func: callable,
+    p: float,
 ):
-    assert len(qa_df_small) == len(qa_df_big), "Small and big QA dataframes should have the same number of Q&A"
+    assert len(qa_df_small) == len(qa_df_big), (
+        "Small and big QA dataframes should have the same number of Q&A"
+    )
     num_correct = 0
     total_qa = len(qa_df_big)
     tokens_small = 0
@@ -588,27 +621,34 @@ def stop_expr_random_baseline(
     for i in range(total_qa):
         qa_small = qa_df_small.iloc[i]
         qa_big = qa_df_big.iloc[i]
-        use_small = np.random.rand() < 0.5  # randomly choose small or big model with equal probability
-        
-        tokens_small += len(tokenizer_small.encode(qa_small["question"])) # either way we pay for the small model prefill
+        use_small = (
+            np.random.rand() < p
+        )  # randomly choose small or big model with probability p for small model
+
+        tokens_small += len(
+            tokenizer_small.encode(qa_small["question"])
+        )  # either way we pay for the small model prefill
         if use_small:
             answer = qa_small["answer"]
             tokens_small += len(tokenizer_small.encode(answer))
         else:
             answer = qa_big["answer"]
-            tokens_big += len(tokenizer_big.encode(qa_small["question"])) # we pay for the big model prefill as well because we have to feed the question to it to get the answer
+            tokens_big += len(
+                tokenizer_big.encode(qa_small["question"])
+            )  # we pay for the big model prefill as well because we have to feed the question to it to get the answer
             tokens_big += len(tokenizer_big.encode(answer))
 
         answer_letter = extract_answer_func(answer)[0]
         if normalize_str(answer_letter) == normalize_str(qa_small["golden_label"]):
             num_correct += 1
-    
+
     accuracy = num_correct / total_qa
-    cost  = (tokens_small * cost_small + tokens_big * cost_big)
+    cost = tokens_small * cost_small + tokens_big * cost_big
     return accuracy, cost
-    
+
+
 def normalize_str(s):
-     # remove all non-alphanumeric characters for comparison
+    # remove all non-alphanumeric characters for comparison
     if pd.isna(s):
         return ""
-    return re.sub(r"\W", "", s) 
+    return re.sub(r"\W", "", s)
