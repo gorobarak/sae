@@ -25,3 +25,4 @@ data/
 main.py
 *.egg-info/
 sae/playground.ipynb
+sae/sae/playground.ipynb
