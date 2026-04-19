@@ -23,7 +23,7 @@ from transformers import (
 from tqdm import tqdm
 import pandas as pd
 from adais.adaptive.probe import CorrectnessScorer
-from adais.datasets import dataset, mmlu_pro
+from adais.datasets import dataset, mmlu_pro, math_dataset
 
 
 def fit_estimator(X: torch.Tensor, Y: torch.Tensor, task_type="regression"):
@@ -418,6 +418,8 @@ def load_dataset(dataset_name: str) -> dataset.Dataset:
     match dataset_name:
         case "MMLU":
             ds = mmlu_pro.get_dataset(validation=True)
+        case "MATH":
+            ds = math_dataset.get_dataset()
         case _:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
     return ds
@@ -470,17 +472,15 @@ def generate_questions_answers_dataset(
             return_dict_in_generate=True,
         )
         output_tokens = generation_output["sequences"].cpu()
-        response_tokens = output_tokens[
-            :, inputs["input_ids"].shape[1] :
-        ]  # discard prompt tokens
+        # discard prompt tokens
+        response_tokens = output_tokens[:, inputs["input_ids"].shape[1] :]
         responses = tokenizer.batch_decode(response_tokens, skip_special_tokens=True)
         response_col_idx = df.columns.get_loc("response")
         df.iloc[i:end_idx, response_col_idx] = responses
 
         hidden_states = generation_output["hidden_states"]
-        hidden_states = hidden_states[
-            0
-        ]  # take hidden states from the first forward pass only
+        # take hidden states from the first forward pass only
+        hidden_states = hidden_states[0]
         hidden_states = hidden_states[1:]  # discard embedding layer hidden states
         hidden_states = torch.stack(
             hidden_states, dim=0
@@ -523,14 +523,19 @@ def generate_questions_answers_dataset(
     return df
 
 
-def get_latest_cpt(path: str):
+def get_latest_cpt(path: str | Path):
     if isinstance(path, Path):
         path = str(path)
-    cpts = os.listdir(path)
-    cpts = sorted(
-        cpts, key=lambda version: datetime.strptime(version, "%Y_%m_%d-%H:%M")
-    )
-    return cpts[-1]
+    entries = []
+    for name in os.listdir(path):
+        try:
+            ts = datetime.strptime(name, "%Y_%m_%d-%H:%M")
+        except ValueError:
+            continue
+        entries.append((ts, name))
+    if not entries:
+        raise ValueError(f"No valid checkpoints found in: {path}")
+    return max(entries, key=lambda x: x[0])[1]
 
 
 def stop_expr(
@@ -650,8 +655,9 @@ def stop_expr_random_baseline(
 def normalize_str(s):
     # remove all non-alphanumeric characters for comparison
     if pd.isna(s):
-        return ""
+        return None
     return re.sub(r"\W", "", s)
+
 
 def get_current_timestamp():
     return datetime.now().strftime("%Y_%m_%d-%H:%M")
